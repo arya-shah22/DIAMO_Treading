@@ -123,5 +123,5 @@ jobs:
           name: DIAMO_TREADING v${{ needs.check.outputs.version }}
           generate_release_notes: true
           files: |
-            release-artifacts/**/*.dmg
-            release-artifacts/**/*.exe
+            release-artifacts/*.dmg
+            release-artifacts/*.exe
