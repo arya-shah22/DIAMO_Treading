@@ -4,6 +4,9 @@ import type { Api } from '../shared/contracts'
 const api: Api = {
   logo: (companyId) => ipcRenderer.invoke('diamo:logo', { companyId }),
   saveRecoveryPdf: () => ipcRenderer.invoke('diamo:saveRecoveryPdf'),
+  systemInfo: () => ipcRenderer.invoke('diamo:systemInfo'),
+  checkUpdate: () => ipcRenderer.invoke('diamo:checkUpdate'),
+  openExternal: (url) => ipcRenderer.invoke('diamo:openExternal', { url }),
   command: (name, input, companyId, operationKey) =>
     ipcRenderer.invoke('diamo:command', { name, input, companyId, operationKey }),
   state: (companyId, query) => ipcRenderer.invoke('diamo:state', { companyId, query }),

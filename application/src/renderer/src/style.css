@@ -1602,6 +1602,150 @@ tbody tr:hover {
   color: #050b1e;
 }
 
+.settings-tabs {
+  display: flex;
+  gap: 6px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 18px;
+}
+
+.settings-tabs [role='tab'] {
+  position: relative;
+  border: 0;
+  background: transparent;
+  border-radius: 7px 7px 0 0;
+  padding: 10px 14px;
+  color: #5b697d;
+}
+
+.settings-tabs [role='tab'][aria-selected='true'] {
+  color: var(--navy);
+}
+
+.settings-tabs [role='tab'][aria-selected='true']::after {
+  content: '';
+  position: absolute;
+  inset: auto 0 -1px;
+  border-block-end: 3px solid var(--gold);
+}
+
+.software-status-box {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 12.5px;
+}
+
+.software-status-box.uptodate {
+  flex-direction: row;
+  align-items: center;
+  background: #eefaf4;
+  border-color: #bfe8d1;
+  color: #166534;
+}
+
+.software-status-box.available {
+  background: #fbf6ea;
+  border-color: #dfc98f;
+  color: #5c430d;
+}
+
+.software-status-box.neutral {
+  flex-direction: row;
+  align-items: center;
+  background: #f8fafc;
+  color: #475569;
+}
+
+.software-status-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+dialog.update-dialog {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 0;
+  width: 490px;
+  max-width: calc(100vw - 32px);
+  box-shadow: 0 22px 64px rgba(7, 16, 36, 0.28);
+  color: #1e293b;
+  background: #fff;
+}
+
+dialog.update-dialog:modal {
+  overscroll-behavior: contain;
+}
+
+dialog.update-dialog::backdrop {
+  background: rgba(7, 16, 36, 0.58);
+  backdrop-filter: blur(2px);
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+
+.update-modal-heading {
+  font-size: 17px;
+  letter-spacing: -0.2px;
+}
+
+.update-icon {
+  color: var(--gold);
+}
+
+.update-version-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.update-latest {
+  color: #8b6817;
+}
+
+.update-release-name {
+  font-size: 13px;
+  color: #0f172a;
+}
+
+.update-notes {
+  max-height: 200px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #334155;
+}
+
+@keyframes diamo-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spin {
+  animation: diamo-spin 0.9s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation: none;
+  }
+}
+
 @media (max-width: 1150px) {
   .sidebar {
     width: 208px;

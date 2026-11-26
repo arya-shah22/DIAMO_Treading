@@ -1,4 +1,13 @@
-import { app, BrowserWindow, ipcMain, dialog, session, nativeImage, safeStorage } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  dialog,
+  session,
+  nativeImage,
+  safeStorage,
+  shell,
+} from 'electron'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import {
@@ -12,6 +21,7 @@ import {
 } from 'node:fs'
 import { ApplicationService } from './services/application'
 import { buildRecoveryPdfHtml, type RecoveryPdfInput } from './services/recovery-pdf'
+import { checkUpdate, DEFAULT_REPO, isTrustedExternalUrl } from './services/updater'
 import { commands, type Command } from '../shared/contracts'
 import { z } from 'zod'
 import ExcelJS from 'exceljs'
@@ -175,6 +185,38 @@ app.whenReady().then(async () => {
       })
       .parse(input)
     return service.state(t.companyId, t.query)
+  })
+  handle('diamo:systemInfo', () => {
+    service.requireAuth()
+    return {
+      version: app.getVersion(),
+      platform: process.platform,
+      arch: process.arch,
+      isPackaged: app.isPackaged,
+      repo: DEFAULT_REPO,
+      dataPath,
+    }
+  })
+  handle('diamo:checkUpdate', async () => {
+    service.requireAuth()
+    const apiUrlOverride =
+      !app.isPackaged && process.env.DIAMO_TEST_UPDATE_URL
+        ? process.env.DIAMO_TEST_UPDATE_URL
+        : undefined
+    return checkUpdate({
+      currentVersion: app.getVersion(),
+      platform: process.platform,
+      arch: process.arch,
+      repo: DEFAULT_REPO,
+      apiUrlOverride,
+    })
+  })
+  handle('diamo:openExternal', async (input) => {
+    service.requireAuth()
+    const { url } = z.object({ url: z.string().min(1).max(2000) }).parse(input)
+    if (!isTrustedExternalUrl(url, DEFAULT_REPO)) throw Error('Blocked untrusted external URL')
+    await shell.openExternal(url)
+    return true
   })
   handle('diamo:logo', async (input) => {
     const companyId = z.string().uuid().parse(input.companyId)

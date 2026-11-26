@@ -251,6 +251,33 @@ export type Journal = z.infer<typeof journal>
 export type Row = Record<string, any>
 export type Result<T> = { ok: true; data: T } | { ok: false; error: string; code?: string }
 export type Query = { from: string; to: string; partyId?: number }
+export interface SystemInfo {
+  version: string
+  platform: string
+  arch: string
+  isPackaged: boolean
+  repo: string
+  dataPath: string
+}
+export type UpdateInfo =
+  | {
+      status: 'success'
+      currentVersion: string
+      latestVersion: string
+      updateAvailable: boolean
+      releaseName: string
+      releaseNotes: string
+      publishedAt: string
+      downloadUrl: string
+      releaseUrl: string
+    }
+  | {
+      status: 'unavailable' | 'offline'
+      currentVersion: string
+      updateAvailable: false
+      message: string
+      releaseUrl: string
+    }
 export interface Api {
   command<C extends Command>(
     name: C,
@@ -266,6 +293,9 @@ export interface Api {
   ): Promise<Result<string>>
   logo(companyId: string): Promise<Result<string>>
   saveRecoveryPdf(): Promise<Result<string>>
+  systemInfo(): Promise<Result<SystemInfo>>
+  checkUpdate(): Promise<Result<UpdateInfo>>
+  openExternal(url: string): Promise<Result<boolean>>
   backup(
     action: 'create' | 'restore' | 'configure' | 'history',
     options?: {

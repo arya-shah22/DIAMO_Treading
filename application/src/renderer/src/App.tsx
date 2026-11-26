@@ -26,7 +26,7 @@ import {
   Users,
   X,
 } from 'lucide-react'
-import type { Command, Query, Row } from '../../shared/contracts'
+import type { Command, Query, Row, SystemInfo, UpdateInfo } from '../../shared/contracts'
 import { days, fy, money, today } from '../../shared/math'
 import logo from '../../../resources/branding/icon.png'
 import { ConfirmDialog, type ConfirmState } from './components/ConfirmDialog'
@@ -38,6 +38,7 @@ import {
   OnboardingRecoveryDrawer,
   SettingsRecoveryDrawer,
 } from './components/RecoveryDrawers'
+import { SoftwareInfoPanel, SoftwareUpdateModal } from './components/UpdateModalAndInfo'
 
 const pages = [
   ['Overview', 'Dashboard', LayoutDashboard],
@@ -117,6 +118,11 @@ export default function App() {
   const [recoveryModal, setRecoveryModal] = useState<
     'rotateRecovery' | 'enrollPin' | 'removePin' | null
   >(null)
+  const [settingsTab, setSettingsTab] = useState<'general' | 'software'>('general')
+  const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null)
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
+  const [checkingUpdate, setCheckingUpdate] = useState(false)
+  const [updateModalOpen, setUpdateModalOpen] = useState(false)
 
   async function refresh(companyId = state.companyId, q = query) {
     const result = await window.diamo.state(companyId, q)
@@ -141,6 +147,51 @@ export default function App() {
       void refresh(state.companyId, query)
     }
   }, [query.from, query.to, page])
+
+  useEffect(() => {
+    if (!state.authenticated) {
+      setSystemInfo(null)
+      setUpdateInfo(null)
+      setUpdateModalOpen(false)
+      setCheckingUpdate(false)
+      return
+    }
+    let active = true
+    void window.diamo.systemInfo().then((res) => {
+      if (active && res.ok) setSystemInfo(res.data)
+    })
+    const timer = window.setTimeout(async () => {
+      const res = await window.diamo.checkUpdate()
+      if (!active || !res.ok) return
+      setUpdateInfo(res.data)
+      if (res.data.status === 'success' && res.data.updateAvailable) {
+        setUpdateModalOpen(true)
+      }
+    }, 3000)
+    return () => {
+      active = false
+      window.clearTimeout(timer)
+    }
+  }, [state.authenticated])
+
+  async function runManualUpdateCheck() {
+    setCheckingUpdate(true)
+    try {
+      const res = await window.diamo.checkUpdate()
+      if (res.ok) {
+        setUpdateInfo(res.data)
+      } else {
+        setError(res.error)
+      }
+    } finally {
+      setCheckingUpdate(false)
+    }
+  }
+
+  async function openExternalUrl(url: string) {
+    const res = await window.diamo.openExternal(url)
+    if (!res.ok) setError(res.error)
+  }
 
   const patch = (key: string, value: any) =>
     setForm((f) => {
@@ -2683,133 +2734,198 @@ export default function App() {
       case 'Settings':
         return (
           <>
-            <section className="panel settings-card">
-              <h2>Account security</h2>
-              <p>
-                Signed in as <strong>{state.username ?? 'admin@gmail.com'}</strong>. Administrator
-                credentials and offline recovery keys are stored locally on this computer.
-              </p>
-              <dl>
-                <dt>Recovery code</dt>
-                <dd>
-                  {state.recoveryStatus?.hasRecovery
-                    ? 'Configured (hidden PDF saved)'
-                    : 'Not configured'}
-                </dd>
-                <dt>Device PIN</dt>
-                <dd>
-                  {!state.recoveryStatus?.canEnroll
-                    ? 'Unavailable on this OS'
-                    : !state.recoveryStatus?.enrolled
-                      ? 'Not configured'
-                      : (state.recoveryStatus.remaining ?? 0) <= 0
-                        ? 'Locked (5 failed attempts — set a new PIN to unlock)'
-                        : `Enrolled · ${state.recoveryStatus.remaining} of 5 attempts remaining`}
-                </dd>
-              </dl>
-              <div className="button-row">
-                <button type="button" onClick={() => open('username', { newUsername: '' })}>
-                  Change username
-                </button>
-                <button type="button" onClick={() => open('password')}>
-                  Change password
-                </button>
-                <button type="button" onClick={() => setRecoveryModal('rotateRecovery')}>
-                  Generate / rotate recovery code
-                </button>
-                {state.recoveryStatus?.canEnroll && (
-                  <button type="button" onClick={() => setRecoveryModal('enrollPin')}>
-                    {state.recoveryStatus?.enrolled ? 'Change device PIN' : 'Set up device PIN'}
+            <div
+              className="settings-tabs"
+              role="tablist"
+              aria-label="Settings sections"
+              onKeyDown={(e) => {
+                if (
+                  e.key === 'ArrowRight' ||
+                  e.key === 'ArrowLeft' ||
+                  e.key === 'Home' ||
+                  e.key === 'End'
+                ) {
+                  e.preventDefault()
+                  const nextTab =
+                    e.key === 'Home'
+                      ? 'general'
+                      : e.key === 'End'
+                        ? 'software'
+                        : settingsTab === 'general'
+                          ? 'software'
+                          : 'general'
+                  setSettingsTab(nextTab)
+                  document.getElementById(`tab-settings-${nextTab}`)?.focus()
+                }
+              }}
+            >
+              <button
+                type="button"
+                role="tab"
+                id="tab-settings-general"
+                aria-selected={settingsTab === 'general'}
+                tabIndex={settingsTab === 'general' ? 0 : -1}
+                onClick={() => setSettingsTab('general')}
+              >
+                General &amp; Security
+              </button>
+              <button
+                type="button"
+                role="tab"
+                id="tab-settings-software"
+                aria-selected={settingsTab === 'software'}
+                tabIndex={settingsTab === 'software' ? 0 : -1}
+                onClick={() => setSettingsTab('software')}
+              >
+                Software info &amp; updates
+              </button>
+            </div>
+            <div
+              role="tabpanel"
+              aria-labelledby="tab-settings-general"
+              hidden={settingsTab !== 'general'}
+            >
+              <section className="panel settings-card">
+                <h2>Account security</h2>
+                <p>
+                  Signed in as <strong>{state.username ?? 'admin@gmail.com'}</strong>. Administrator
+                  credentials and offline recovery keys are stored locally on this computer.
+                </p>
+                <dl>
+                  <dt>Recovery code</dt>
+                  <dd>
+                    {state.recoveryStatus?.hasRecovery
+                      ? 'Configured (hidden PDF saved)'
+                      : 'Not configured'}
+                  </dd>
+                  <dt>Device PIN</dt>
+                  <dd>
+                    {!state.recoveryStatus?.canEnroll
+                      ? 'Unavailable on this OS'
+                      : !state.recoveryStatus?.enrolled
+                        ? 'Not configured'
+                        : (state.recoveryStatus.remaining ?? 0) <= 0
+                          ? 'Locked (5 failed attempts — set a new PIN to unlock)'
+                          : `Enrolled · ${state.recoveryStatus.remaining} of 5 attempts remaining`}
+                  </dd>
+                </dl>
+                <div className="button-row">
+                  <button type="button" onClick={() => open('username', { newUsername: '' })}>
+                    Change username
                   </button>
-                )}
-                {state.recoveryStatus?.enrolled && (
-                  <button
-                    type="button"
-                    className="danger-text"
-                    onClick={() => setRecoveryModal('removePin')}
-                  >
-                    Remove device PIN
+                  <button type="button" onClick={() => open('password')}>
+                    Change password
                   </button>
-                )}
-              </div>
-            </section>
-            {state.companyId && (
-              <>
-                <section className="panel settings-card">
-                  <h2>Company preferences</h2>
-                  <dl>
-                    <dt>Company</dt>
-                    <dd>{state.profile.name}</dd>
-                    <dt>Financial year</dt>
-                    <dd>April – March</dd>
-                    <dt>Currency / precision</dt>
-                    <dd>INR · 2 decimals</dd>
-                    <dt>Default stock hike</dt>
-                    <dd>{state.settings.global_hike_pct}%</dd>
-                    <dt>Accounting</dt>
-                    <dd>Accrual · original-date corrections</dd>
-                  </dl>
-                  <div className="button-row">
-                    <button type="button" onClick={() => open('settings')}>
-                      Edit company settings
+                  <button type="button" onClick={() => setRecoveryModal('rotateRecovery')}>
+                    Generate / rotate recovery code
+                  </button>
+                  {state.recoveryStatus?.canEnroll && (
+                    <button type="button" onClick={() => setRecoveryModal('enrollPin')}>
+                      {state.recoveryStatus?.enrolled ? 'Change device PIN' : 'Set up device PIN'}
                     </button>
+                  )}
+                  {state.recoveryStatus?.enrolled && (
                     <button
                       type="button"
-                      onClick={async () => {
-                        const r = await window.diamo.logo(state.companyId)
-                        if (!r.ok) setError(r.error)
-                        else await refresh()
-                      }}
+                      className="danger-text"
+                      onClick={() => setRecoveryModal('removePin')}
                     >
-                      Choose company logo
+                      Remove device PIN
                     </button>
-                    <button type="button" onClick={() => open('numbering')}>
-                      Configure numbering
+                  )}
+                </div>
+              </section>
+              {state.companyId && (
+                <>
+                  <section className="panel settings-card">
+                    <h2>Company preferences</h2>
+                    <dl>
+                      <dt>Company</dt>
+                      <dd>{state.profile.name}</dd>
+                      <dt>Financial year</dt>
+                      <dd>April – March</dd>
+                      <dt>Currency / precision</dt>
+                      <dd>INR · 2 decimals</dd>
+                      <dt>Default stock hike</dt>
+                      <dd>{state.settings.global_hike_pct}%</dd>
+                      <dt>Accounting</dt>
+                      <dd>Accrual · original-date corrections</dd>
+                    </dl>
+                    <div className="button-row">
+                      <button type="button" onClick={() => open('settings')}>
+                        Edit company settings
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const r = await window.diamo.logo(state.companyId)
+                          if (!r.ok) setError(r.error)
+                          else await refresh()
+                        }}
+                      >
+                        Choose company logo
+                      </button>
+                      <button type="button" onClick={() => open('numbering')}>
+                        Configure numbering
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const r = await window.diamo.export('xlsx', 'Company settings', [
+                            {
+                              Company: state.profile.name,
+                              Address: state.profile.address ?? '',
+                              Contact: state.profile.contact ?? '',
+                              Currency: 'INR',
+                              Precision: 2,
+                              Hike: state.settings.global_hike_pct,
+                              Accounting: 'Accrual',
+                            },
+                          ])
+                          if (!r.ok) setError(r.error)
+                        }}
+                      >
+                        Export settings
+                      </button>
+                    </div>
+                  </section>
+                  <section className="panel settings-card">
+                    <h2>Ledger accounts</h2>
+                    <button type="button" onClick={() => open('account')}>
+                      Add ledger account
                     </button>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        const r = await window.diamo.export('xlsx', 'Company settings', [
-                          {
-                            Company: state.profile.name,
-                            Address: state.profile.address ?? '',
-                            Contact: state.profile.contact ?? '',
-                            Currency: 'INR',
-                            Precision: 2,
-                            Hike: state.settings.global_hike_pct,
-                            Accounting: 'Accrual',
-                          },
-                        ])
-                        if (!r.ok) setError(r.error)
-                      }}
-                    >
-                      Export settings
-                    </button>
-                  </div>
-                </section>
-                <section className="panel settings-card">
-                  <h2>Ledger accounts</h2>
-                  <button type="button" onClick={() => open('account')}>
-                    Add ledger account
-                  </button>
-                  {table('Ledger accounts', state.accounts, [
-                    col('code', 'Code'),
-                    col('name', 'Name'),
-                    col('kind', 'Type'),
-                    col('control', 'Protected', (v) => (v ? 'Yes' : 'No')),
+                    {table('Ledger accounts', state.accounts, [
+                      col('code', 'Code'),
+                      col('name', 'Name'),
+                      col('kind', 'Type'),
+                      col('control', 'Protected', (v) => (v ? 'Yes' : 'No')),
+                    ])}
+                  </section>
+                  <h2 className="section-title">Audit history</h2>
+                  {table('Audit history', state.audit, [
+                    col('created_at', 'Recorded'),
+                    col('entity_type', 'Type'),
+                    col('entity_id', 'Document'),
+                    col('action', 'Action'),
+                    col('effective_date', 'Effective date', displayDate),
+                    col('reason', 'Reason'),
                   ])}
-                </section>
-                <h2 className="section-title">Audit history</h2>
-                {table('Audit history', state.audit, [
-                  col('created_at', 'Recorded'),
-                  col('entity_type', 'Type'),
-                  col('entity_id', 'Document'),
-                  col('action', 'Action'),
-                  col('effective_date', 'Effective date', displayDate),
-                  col('reason', 'Reason'),
-                ])}
-              </>
-            )}
+                </>
+              )}
+            </div>
+            <div
+              role="tabpanel"
+              aria-labelledby="tab-settings-software"
+              hidden={settingsTab !== 'software'}
+            >
+              <SoftwareInfoPanel
+                systemInfo={systemInfo}
+                updateInfo={updateInfo}
+                checking={checkingUpdate}
+                onCheckUpdate={() => void runManualUpdateCheck()}
+                onOpenExternal={(url) => void openExternalUrl(url)}
+              />
+            </div>
           </>
         )
 
@@ -3578,6 +3694,42 @@ export default function App() {
             }}
           />
         )}
+
+        <SoftwareUpdateModal
+          open={
+            updateModalOpen && !state.recoveryPrompt && !modal && !confirmState && !recoveryModal
+          }
+          info={
+            updateInfo && updateInfo.status === 'success' && updateInfo.updateAvailable
+              ? updateInfo
+              : null
+          }
+          onDismiss={() => setUpdateModalOpen(false)}
+          onDownload={(url) => {
+            setUpdateModalOpen(false)
+            void openExternalUrl(url)
+          }}
+        />
+
+        <SoftwareUpdateModal
+          open={
+            updateModalOpen &&
+            !state.recoveryPrompt &&
+            !modal &&
+            !confirmState &&
+            !recoveryModal
+          }
+          info={
+            updateInfo && updateInfo.status === 'success' && updateInfo.updateAvailable
+              ? updateInfo
+              : null
+          }
+          onDismiss={() => setUpdateModalOpen(false)}
+          onDownload={(url) => {
+            setUpdateModalOpen(false)
+            void openExternalUrl(url)
+          }}
+        />
       </div>
     </ReportContext.Provider>
   )
