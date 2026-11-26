@@ -1,0 +1,23 @@
+{
+  ".DS_Store": "21664dd0374b4accd524ffc0f7c25f7d3aba2b8ef1c4194c3986c9d6cfaec748",
+  "AGENTS.md": "2cba4f0d7aefd25fda8c07c6a88f1b3aae57f96cd11a5e524cfb438675e41b37",
+  "MASTER_PROMPT.md": "dd3b5edd92d43fb05a8680009538eb188ae90a4eabe1595e6ea9fe67b6c24d64",
+  "README.md": "f8d935cb2c157521fb5afa707685a8aa280827cb536470c583397eb824e9c066",
+  "database/README.md": "ce3bdc56c803f1cae0671d7e325e6d5312971077be9aacc92fe2edd2b6553d38",
+  "database/app.sql": "8113257bba9d942c83ff9010174a4e2af057acce11e51443b8a81f0f35794ade",
+  "database/company.sql": "629dd1a354468a2a4b9186ad576f720f7ffe97929dc019134b3baee7af820edc",
+  "database/verify.py": "bf8a084c3d538e1546271ed60478ab9abff8beb90e89e9db6fa9f38c2a225581",
+  "docs/ACCEPTANCE_CRITERIA.md": "9de735a8af26c494802d4938683033f838658ab788a1c9d0b5c9cee2be6e8c09",
+  "docs/BUSINESS_RULES.md": "8beb1594e057dee301b70c34d90ba09a42865a0ee0eb5391219f1c38450d5315",
+  "docs/DEVELOPMENT_PLAN.md": "6c163e7adc89cbe4150267d79badf40e548ec700da3d09db417bb2a156f737eb",
+  "docs/SRS.md": "ecab6cdde97a89924a88ab1adb425330a38a382cfaa3545df8dc9a06ae87e16b",
+  "docs/TECHNICAL_ARCHITECTURE.md": "7e65759718944fc270ddbfd5a5ff56f04e028e8cfb37db20ad6e52db1b513b91",
+  "docs/TEST_CASES.md": "18fd05bff769c00b13b1194c27f796aa3b29a484b9b80098694a93b4b1a7791f",
+  "docs/UI_DESIGN_SYSTEM.md": "dc48775c7da69a3e864ea1da31a0cdc81a31a6040c03a42a21e2b6760c0c4f0e",
+  "fixtures/SAMPLE_DATA.json": "958a558c19098bc492c6ef97819a36edd640c2b17d211113d2cc0396283d2e88",
+  "references/erp-reference.png": "a0ca76b79ba0d07d04feb9a783fef5ca0786a0465035120b921f19df3052c89c",
+  "references/login-reference.png": "f22fe3d43b987befad96d6b5d6f5400ebf188224f4b6f0340dd4398800a46a55",
+  "resources/.DS_Store": "7916208ef627a9916198793abdc0b070e9a01142489879cbc5310bacf0f6e5cb",
+  "resources/logo/README.md": "64e34ecd1f92a8ddc3a114a55469c22cb7bab8aa374876f9300ea6fd84403504",
+  "resources/logo/icon.png": "b11fef61b1c1a0d7876838b402e01ba4a29bc249007b4dcd6d21ac7e47a29972"
+}

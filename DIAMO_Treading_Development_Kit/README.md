@@ -1,0 +1,2 @@
+# DIAMO_Treading development kit
+Extract into an empty Git repository. Add original logo at resources/logo/diamo-logo.png. Open repository in Codex and instruct it to read AGENTS.md and MASTER_PROMPT.md. Screenshots are visual references only. SQL is a runnable baseline, not an application; run python3 database/verify.py to smoke-test. Do not seed demonstration data in production. Documents define behavior; schema may be extended through migrations. No installers or application code are included.

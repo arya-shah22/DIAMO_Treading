@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+
+# Build & installer outputs
+out/
+dist/
+coverage/
+
+# Test artifacts & logs
+test-results/
+playwright-report/
+*.log
+
+# Databases, backups & offline recovery artifacts
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.db
+*.db-*
+*.diamo
+backups/
+.diamo-device
+.diamo-recovery-*.pdf
+
+# Environment, signing & secrets
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.pem
+
+# OS metadata
+.DS_Store

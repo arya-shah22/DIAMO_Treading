@@ -1,0 +1,28 @@
+# Software requirements specification — confirmed V3
+## Scope
+Personal business use; offline Windows/macOS desktop app; multiple independent companies, one administrator. INR only, no GST. Two decimal carats and currency. No manufacturing, purchase/sale returns, manual stock adjustments or automatic intercompany transfers. No separate complex expense/capital modules: use Journal Voucher. Financial year April–March with continuous balances.
+## Authentication and companies
+First launch initializes SQLite and admin@gmail.com / Admin@123 once; hash password, never reset on restart. Login username/password, visibility toggle, Enter submit, loading/errors, logout, password change. Recommend forced first-login change (implementation default). Company selection/create/switch; independent masters, numbering, accounts, stock, settings and reports. Company profile name, address, contact, logo, start date. Opening wizard: stock lots with cost and dates, party receivables/payables/advances and optional original invoice references/due dates, cash/bank, loans with prior interest, capital and other balances; require balanced opening entries. No opening stock counted as current purchases.
+## Pages (17)
+| Page | Fields and behavior |
+|---|---|
+| Dashboard | Purchases, sales, available carats, stock cost, projected value/profit, receivables/payables, loans given/taken, cash/bank, actual profit, upcoming/overdue dues; today/month/FY/custom filters; distinguish point-in-time balances from period flows |
+| Parties Master | Auto ID, name, supplier/customer/both/broker/other roles (multiple roles), contact person, phone, email, address, optional PAN/GSTIN informational only, credit days, remarks, active status; party profile with purchases, sales, payments, loans, broker ledger, balances |
+| Quality Master | Auto ID, unique name, description, optional hike override, active status; e.g. CVD ROUND and CVD FENCY; no deletion if referenced |
+| Bank Accounts | Auto ID, bank name, holder, account number, IFSC, opening balance/date, active status; multiple accounts |
+| Stock Inventory | Category, purchased/sold/opening/available carats, remaining cost, average cost/ct, hike, projected rate/value/profit; drill into individual lots and movements; as-of date |
+| Purchase | Add Purchase, summary cards, register, details, edit/cancel, export; auto number, date, supplier, multiple lines category/carat/rate/less%, gross/net, expenses (supplier or separate cash/bank), total inventory cost, supplier invoice total, due days/date, remarks, paid/outstanding/status |
+| Sale | Add Sale, summary cards, register, details, edit/cancel, export; auto number, date, customer, multiple lines category/available carats/carat/rate/less%, after less, brokerage fixed/% per item or invoice with broker, after brokerage, signed additional invoice adjustments, invoice total, net proceeds, COGS/profit, due days/date, remarks, received/outstanding/status; FIFO/manual lot allocation |
+| Loans | Loan taken/given, auto ID, party, principal, rate (zero allowed), monthly/yearly, date, optional return date, cash/bank, remarks, accrued/paid interest, open/closed/cancelled; interest-only payments and full principal settlement |
+| Payments | Pay/receive, ID/date/party/account/mode/reference/remarks, manual or oldest-first allocation to one/multiple bills, partial payments, advances, broker dues, loan interest and full settlement; show allocated/unallocated amounts |
+| Cash & Bank | Cash in hand, each bank balance, combined funds, account ledger, cash deposit/withdrawal and bank transfer, warnings for negative balances; cash book and bank book |
+| Journal Voucher | Auto ID/date/reference/narration, multiple ledger lines, debit or credit per line, balanced totals, add/edit/cancel, register; custom ledger accounts; capital, drawings, expenses, other income and adjustments |
+| Party Ledger | Date/particulars/reference/debit/credit/running balance, opening/closing, filters and drill-down; distinguish loans, advances, trade and brokerage |
+| Balance Sheet | As-of date, assets/liabilities/equity, actual inventory cost only, cash/bank, receivables/payables, loans, accrued interest, capital and earnings; balanced |
+| Profit & Loss | Period revenue, COGS, gross profit, brokerage, expenses, interest income/expense, net profit and margin; exclude projections |
+| Day Book | Chronological financial transactions, type/party/date/reference filters, drill-down |
+| Manage Companies | Create/select/edit company, opening wizard, independent data; no automatic cross-company transfers |
+| Settings / Backup & Restore | Two separate navigation destinations: company profile, FY, hike, numbering, default credit days, fixed precision, password, ledger accounts, appearance/export preferences; backup schedule/path/retention/history, manual/automatic/restore |
+The grouped last row represents two pages (17 total). Trial Balance, outstanding ageing, stock lot/projection, loan and journal registers accessible as subreports. All registers searchable, sortable, paginated, filterable by relevant dates/party/category/status; export filtered rows and totals to PDF/Excel/CSV where tabular, print; individual invoices/vouchers printable. Dashboard and financial statements PDF/Excel/print. Settings export excludes secrets. No cloud sync.
+## Transaction lifecycle
+Draft previews do not post. Confirmed records create stock, accounting and settlements atomically. Edit/cancel with reason, before/after audit and reversal/repost; block if dependent stock or settlements become invalid. Cancelled numbers never reused. Inactive masters remain visible in history. All reports derive from same records.

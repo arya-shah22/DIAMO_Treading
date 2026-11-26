@@ -1,0 +1,116 @@
+{
+  "note": "Independent scenarios, INR and carats in human units; never production seed",
+  "companies": [
+    {
+      "name": "Demo A"
+    },
+    {
+      "name": "Demo B"
+    }
+  ],
+  "parties": [
+    {
+      "name": "Demo Supplier",
+      "roles": [
+        "supplier"
+      ]
+    },
+    {
+      "name": "Demo Customer",
+      "roles": [
+        "customer"
+      ]
+    },
+    {
+      "name": "Demo Broker",
+      "roles": [
+        "broker"
+      ]
+    },
+    {
+      "name": "Demo Lender",
+      "roles": [
+        "other"
+      ]
+    }
+  ],
+  "qualities": [
+    "CVD ROUND",
+    "CVD FENCY"
+  ],
+  "scenarios": {
+    "fifo": {
+      "purchases": [
+        {
+          "date": "2026-11-01",
+          "category": "CVD ROUND",
+          "carats": 50,
+          "rate": 4000
+        },
+        {
+          "date": "2026-11-02",
+          "category": "CVD ROUND",
+          "carats": 100,
+          "rate": 5000
+        }
+      ],
+      "sale": {
+        "date": "2026-11-03",
+        "category": "CVD ROUND",
+        "carats": 40,
+        "rate": 6000
+      },
+      "expected": {
+        "cogs": 160000,
+        "remainingCarats": 110,
+        "remainingCost": 540000
+      }
+    },
+    "expenses": {
+      "netLines": [
+        190000,
+        294000
+      ],
+      "expense": 5000,
+      "expectedAllocations": [
+        1962.81,
+        3037.19
+      ]
+    },
+    "brokerage": {
+      "gross": 100000,
+      "lessPct": 5,
+      "adjustment": 1000,
+      "brokeragePct": 2,
+      "cogs": 80000,
+      "expectedInvoice": 96000,
+      "expectedBrokerage": 1900,
+      "expectedProfit": 14100
+    },
+    "payment": {
+      "bills": [
+        50000,
+        100000,
+        75000
+      ],
+      "amount": 125000,
+      "expectedAllocations": [
+        50000,
+        75000,
+        0
+      ]
+    },
+    "loan": {
+      "principal": 500000,
+      "monthlyPct": 1,
+      "start": "2026-11-26",
+      "end": "2027-02-15",
+      "interestPaid": 5000,
+      "expectedSettlement": 508500
+    },
+    "opening": {
+      "cash": 50000,
+      "capital": 50000
+    }
+  }
+}

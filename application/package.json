@@ -1,0 +1,92 @@
+{
+  "name": "diamo-treading",
+  "version": "1.0.0",
+  "private": true,
+  "description": "DIAMO offline diamond trading ERP",
+  "author": "DIAMO",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/test.cjs",
+    "test:ui": "playwright test",
+    "package:win": "npm run build && electron-builder --win nsis --x64",
+    "package:mac": "npm run build && electron-builder --mac dmg --arm64 --x64",
+    "postinstall": "electron-builder install-app-deps",
+    "native:rebuild": "electron-rebuild -f -w better-sqlite3"
+  },
+  "build": {
+    "appId": "com.diamo.treading",
+    "productName": "DIAMO_TREADING",
+    "directories": {
+      "output": "dist",
+      "buildResources": "resources"
+    },
+    "files": [
+      "out/**/*",
+      "resources/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "**/*.node"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "resources/branding/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.finance",
+      "icon": "resources/branding/icon.png"
+    },
+    "artifactName": "DIAMO_TREADING-${version}-${os}-${arch}.${ext}"
+  },
+  "dependencies": {
+    "@fontsource/inter": "5.3.0",
+    "bcryptjs": "3.0.3",
+    "better-sqlite3": "13.2.0",
+    "decimal.js": "10.6.0",
+    "exceljs": "4.4.0",
+    "hash-wasm": "^4.13.0",
+    "lucide-react": "1.80.0",
+    "pdfkit": "0.21.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "4.2.1",
+    "@playwright/test": "1.65.1",
+    "@types/better-sqlite3": "9.6.0",
+    "@types/node": "26.6.11",
+    "@types/pdfkit": "0.17.7",
+    "@types/react": "19.3.3",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.3.0",
+    "electron": "45.5.0",
+    "electron-builder": "26.18.0",
+    "electron-vite": "6.0.0",
+    "prettier": "3.10.1",
+    "typescript": "7.0.2",
+    "vite": "8.3.8",
+    "vitest": "4.1.12"
+  },
+  "overrides": {
+    "exceljs": {
+      "uuid": "11.1.1"
+    },
+    "@electron/universal": {
+      "minimatch": "11.0.1"
+    },
+    "app-builder-lib": {
+      "minimatch": "11.0.1"
+    }
+  }
+}
