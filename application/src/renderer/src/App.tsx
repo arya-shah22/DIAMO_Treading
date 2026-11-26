@@ -3710,26 +3710,6 @@ export default function App() {
             void openExternalUrl(url)
           }}
         />
-
-        <SoftwareUpdateModal
-          open={
-            updateModalOpen &&
-            !state.recoveryPrompt &&
-            !modal &&
-            !confirmState &&
-            !recoveryModal
-          }
-          info={
-            updateInfo && updateInfo.status === 'success' && updateInfo.updateAvailable
-              ? updateInfo
-              : null
-          }
-          onDismiss={() => setUpdateModalOpen(false)}
-          onDownload={(url) => {
-            setUpdateModalOpen(false)
-            void openExternalUrl(url)
-          }}
-        />
       </div>
     </ReportContext.Provider>
   )
