@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { AlertCircle, CheckCircle2, Download, ExternalLink, Info, RefreshCw, X } from 'lucide-react'
+import { AlertCircle, CheckCircle2, Download, Info, RefreshCw, X } from 'lucide-react'
 import type { SystemInfo, UpdateInfo } from '../../../shared/contracts'
 
 export function formatPlatform(platform: string, arch: string) {
@@ -125,7 +125,6 @@ export function SoftwareInfoPanel({
   onOpenExternal: (url: string) => void
 }) {
   const repo = systemInfo?.repo ?? 'arya-shah22/DIAMO_Treading'
-  const releasesUrl = `https://github.com/${repo}/releases`
 
   return (
     <section className="panel settings-card">
@@ -149,10 +148,6 @@ export function SoftwareInfoPanel({
         <button type="button" className="primary" disabled={checking} onClick={onCheckUpdate}>
           <RefreshCw size={15} className={checking ? 'spin' : undefined} />
           {checking ? 'Checking for updates...' : 'Check for updates'}
-        </button>
-        <button type="button" onClick={() => onOpenExternal(releasesUrl)}>
-          <ExternalLink size={15} />
-          View releases on GitHub
         </button>
       </div>
 
