@@ -54,7 +54,38 @@ export function fy(date: string) {
 }
 export const money = (v: number) =>
   new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format((v || 0) / 100)
+export const usd = (v: number | string) => {
+  const n = Number(v || 0)
+  const decimals = Number.isFinite(n) && Math.abs(n * 100 - Math.round(n * 100)) > 0.0001 ? 4 : 2
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: decimals,
+  }).format(Number.isFinite(n) ? n : 0)
+}
 export const today = () => {
   const d = new Date()
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+export function srPrefix(qualityName: string): string {
+  const slug = String(qualityName ?? '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+  return slug || 'ST'
+}
+export function formatSrNo(prefix: string, seq: number): string {
+  return `${prefix}-${String(Math.max(1, seq)).padStart(4, '0')}`
+}
+export function parseSrSequence(srNo: string, prefix: string): number | null {
+  const clean = String(srNo ?? '')
+    .trim()
+    .toUpperCase()
+  const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = clean.match(new RegExp(`^${escaped}-(\\d+)$`))
+  if (!match) return null
+  const parsed = Number(match[1])
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null
 }

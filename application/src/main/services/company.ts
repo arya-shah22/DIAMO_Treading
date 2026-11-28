@@ -10,7 +10,17 @@ import {
   type Row,
   type Query,
 } from '../../shared/contracts'
-import { addDays, allocate, fy, integer, interest, lineValue } from '../../shared/math'
+import {
+  addDays,
+  allocate,
+  formatSrNo,
+  fy,
+  integer,
+  interest,
+  lineValue,
+  parseSrSequence,
+  srPrefix,
+} from '../../shared/math'
 export class CompanyService {
   private beforeFunds: Record<string, { date: string; balance: number }[]> = {}
   private numberOverride?: string
@@ -243,7 +253,10 @@ export class CompanyService {
     this.validateDate(t.date)
     this.party(t.partyId, kind === 'purchase' ? 'supplier' : 'customer')
     const lines = t.lines.map((l) => {
-      this.one('SELECT id FROM qualities WHERE id=? AND active=1', l.qualityId)
+      const qRow = this.one(
+        'SELECT id,inventory_mode,name FROM qualities WHERE id=? AND active=1',
+        l.qualityId,
+      )
       if (
         this.all(
           "SELECT d.id FROM sales d JOIN sale_items s ON s.sale_id=d.id WHERE d.status='posted' AND s.quality_id=? AND d.bill_date>? LIMIT 1",
@@ -254,7 +267,35 @@ export class CompanyService {
         throw Error(
           'Later sales depend on this category. Reverse them before inserting a backdated stock transaction.',
         )
-      return { ...l, ...lineValue(l.carats, l.rate, l.less), cost: 0 }
+      const priceCurrency = l.priceCurrency ?? (l.stone?.priceCurrency === 'USD' ? 'USD' : 'INR')
+      const exchangeRate = String(l.exchangeRate || l.stone?.exchangeRate || '').trim()
+      const rateUsd = String(l.rateUsd || l.stone?.rateUsd || '').trim()
+      let totalUsd = String(l.totalUsd || l.stone?.totalUsd || '').trim()
+      const vals = lineValue(l.carats, l.rate, l.less)
+      if (priceCurrency === 'USD' && (!exchangeRate || Number(exchangeRate) <= 0)) {
+        throw Error('Enter a valid USD to INR exchange rate for USD-priced items')
+      }
+      if (!totalUsd && exchangeRate && Number(exchangeRate) > 0) {
+        totalUsd = new Decimal(vals.net)
+          .div(100)
+          .div(exchangeRate)
+          .toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
+          .toFixed(2)
+      }
+      if (kind === 'sale' && qRow.inventory_mode === 'individual' && !l.lots.length) {
+        throw Error(`Select specific stone(s) to sell for individual stone quality ${qRow.name}`)
+      }
+      return {
+        ...l,
+        priceCurrency,
+        exchangeRate,
+        rateUsd,
+        totalUsd,
+        qualityName: qRow.name as string,
+        inventoryMode: qRow.inventory_mode as 'bulk' | 'individual',
+        ...vals,
+        cost: 0,
+      }
     })
     const net = lines.reduce((s, l) => s + l.net, 0)
     let supplier = net,
@@ -298,6 +339,27 @@ export class CompanyService {
       }
     })
     const brokerTotal = brokerages.reduce((s, b) => s + b.amount, 0)
+    const proceeds = invoice - brokerTotal
+    const fxRates = [...new Set(lines.map((l) => l.exchangeRate).filter(Boolean))]
+    const uniformRate = fxRates.length === 1 ? fxRates[0] : ''
+    const allUsd = lines.length > 0 && lines.every((l) => l.priceCurrency === 'USD')
+    const allHaveUsd = lines.length > 0 && lines.every((l) => Boolean(l.totalUsd))
+    const displayCurrency = allUsd ? 'USD' : 'INR'
+    const sumLinesUsd = allHaveUsd
+      ? lines
+          .reduce((s, l) => s.plus(l.totalUsd || 0), new Decimal(0))
+          .toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
+          .toFixed(2)
+      : ''
+    const inrToUsd = (inrPaise: number) => {
+      if (inrPaise === net && sumLinesUsd) return sumLinesUsd
+      if (!uniformRate || Number(uniformRate) <= 0) return ''
+      return new Decimal(inrPaise)
+        .div(100)
+        .div(uniformRate)
+        .toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
+        .toFixed(2)
+    }
     return {
       lines,
       net,
@@ -306,30 +368,101 @@ export class CompanyService {
       invoice,
       brokerages,
       brokerTotal,
-      proceeds: invoice - brokerTotal,
+      proceeds,
+      displayCurrency,
+      exchangeRate: uniformRate,
+      netUsd: sumLinesUsd,
+      supplierUsd: inrToUsd(supplier),
+      stockUsd: inrToUsd(stock),
+      invoiceUsd: inrToUsd(invoice),
+      proceedsUsd: inrToUsd(proceeds),
     }
+  }
+  nextSrSeq(qualityId: number, qualityName: string): number {
+    const prefix = srPrefix(qualityName)
+    const seqRow = this.all(
+      'SELECT next_number FROM quality_sequences WHERE quality_id=?',
+      qualityId,
+    )[0]
+    let nextNum = Number(seqRow?.next_number ?? 1)
+    const existing = this.all('SELECT sr_no FROM diamond_stones WHERE quality_id=?', qualityId)
+    for (const row of existing) {
+      const parsed = parseSrSequence(String(row.sr_no ?? ''), prefix)
+      if (parsed && parsed >= nextNum) nextNum = parsed + 1
+    }
+    return nextNum
+  }
+  private allocateSrNo(
+    qualityId: number,
+    qualityName: string,
+    requestedSrNo: string,
+    reserved: Set<string>,
+  ): string {
+    const prefix = srPrefix(qualityName)
+    const clean = requestedSrNo.trim().toUpperCase()
+    const isTaken = (candidate: string) =>
+      reserved.has(candidate.toUpperCase()) ||
+      this.all(
+        "SELECT id FROM diamond_stones WHERE upper(sr_no)=upper(?) AND availability<>'cancelled' LIMIT 1",
+        candidate,
+      ).length > 0
+
+    if (clean) {
+      if (isTaken(clean)) {
+        throw Error(`Diamond Sr. number "${clean}" is already assigned to another active stone`)
+      }
+      reserved.add(clean.toUpperCase())
+      const parsed = parseSrSequence(clean, prefix)
+      if (parsed) {
+        const cur = this.nextSrSeq(qualityId, qualityName)
+        const target = Math.max(cur, parsed + 1)
+        this.run(
+          'INSERT OR REPLACE INTO quality_sequences(quality_id,next_number) VALUES(?,?)',
+          qualityId,
+          target,
+        )
+      }
+      return clean
+    }
+
+    let seq = this.nextSrSeq(qualityId, qualityName)
+    let generated = formatSrNo(prefix, seq)
+    while (isTaken(generated)) {
+      seq += 1
+      generated = formatSrNo(prefix, seq)
+    }
+    reserved.add(generated.toUpperCase())
+    this.run(
+      'INSERT OR REPLACE INTO quality_sequences(quality_id,next_number) VALUES(?,?)',
+      qualityId,
+      seq + 1,
+    )
+    return generated
   }
   purchase(t: Trade) {
     const p = this.tradePreview(t, 'purchase')
     const number = this.sequence('PUR', t.date)
     const id = Number(
       this.run(
-        "INSERT INTO purchases(number,party_id,bill_date,due_days,due_date,remarks,status,supplier_total,stock_total) VALUES(?,?,?,?,?,?,'posted',?,?)",
+        "INSERT INTO purchases(number,party_id,bill_date,due_days,due_date,slip_no,remarks,status,supplier_total,stock_total) VALUES(?,?,?,?,?,?,?,'posted',?,?)",
         number,
         t.partyId,
         t.date,
         t.dueDays,
         addDays(t.date, t.dueDays),
+        t.slipNo,
         t.remarks,
         p.supplier,
         p.stock,
       ).lastInsertRowid,
     )
     const items: number[] = []
+    const reservedSr = new Set<string>()
     for (const l of p.lines) {
+      const s = l.stone
       const item = Number(
         this.run(
-          'INSERT INTO purchase_items(purchase_id,quality_id,carats,rate,less_pct,gross,net) VALUES(?,?,?,?,?,?,?)',
+          'INSERT INTO purchase_items(purchase_id,quality_id,carats,rate,less_pct,gross,net,price_currency,exchange_rate,rate_usd,total_usd) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
           id,
           l.qualityId,
           l.carats,
@@ -337,6 +470,10 @@ export class CompanyService {
           l.less,
           l.gross,
           l.net,
+          s?.priceCurrency ?? l.priceCurrency,
+          s?.exchangeRate || l.exchangeRate || null,
+          s?.rateUsd || l.rateUsd || null,
+          s?.totalUsd || l.totalUsd || null,
         ).lastInsertRowid,
       )
       items.push(item)
@@ -361,6 +498,51 @@ export class CompanyService {
         'purchase',
         id,
       )
+      if (l.inventoryMode === 'individual') {
+        const srNo = this.allocateSrNo(l.qualityId, l.qualityName, s?.srNo ?? '', reservedSr)
+        const totalInrVal = l.net
+        this.run(
+          `INSERT INTO diamond_stones(
+            lot_id,purchase_item_id,quality_id,sr_no,availability,unbilled,
+            shape,carats,color,fancy_color,color_intensity,color_overtone,
+            clarity,cut,polish,symmetry,ratio,length_mm,width_mm,height_mm,
+            depth_pct,table_pct,fluorescence,lab,report_number,growth,
+            price_currency,exchange_rate,price_per_ct_usd,total_price_usd,price_per_ct_inr,total_price_inr
+          ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          lot,
+          item,
+          l.qualityId,
+          srNo,
+          s?.availability ?? 'available',
+          s?.unbilled ? 1 : 0,
+          s?.shape ?? '',
+          l.carats,
+          s?.color ?? '',
+          s?.fancyColor ?? '',
+          s?.colorIntensity ?? '',
+          s?.colorOvertone ?? '',
+          s?.clarity ?? '',
+          s?.cut ?? '',
+          s?.polish ?? '',
+          s?.symmetry ?? '',
+          s?.ratio ?? '',
+          s?.lengthMm ?? '',
+          s?.widthMm ?? '',
+          s?.heightMm ?? '',
+          s?.depthPct ?? '',
+          s?.tablePct ?? '',
+          s?.fluorescence ?? '',
+          s?.lab ?? '',
+          s?.reportNumber ?? '',
+          s?.growth ?? '',
+          s?.priceCurrency ?? 'INR',
+          s?.exchangeRate ?? '',
+          s?.rateUsd ?? '',
+          s?.totalUsd ?? '',
+          s?.rateInr || l.rate,
+          totalInrVal,
+        )
+      }
     }
     const entries = [this.entry('INV', p.stock), this.entry('AP', -p.supplier)]
     for (const e of t.expenses) {
@@ -397,12 +579,13 @@ export class CompanyService {
     const number = this.sequence('SAL', t.date)
     const id = Number(
       this.run(
-        "INSERT INTO sales(number,party_id,bill_date,due_days,due_date,remarks,status,invoice_total) VALUES(?,?,?,?,?,?,'posted',?)",
+        "INSERT INTO sales(number,party_id,bill_date,due_days,due_date,slip_no,remarks,status,invoice_total) VALUES(?,?,?,?,?,?,?,'posted',?)",
         number,
         t.partyId,
         t.date,
         t.dueDays,
         addDays(t.date, t.dueDays),
+        t.slipNo,
         t.remarks,
         p.invoice,
       ).lastInsertRowid,
@@ -412,7 +595,7 @@ export class CompanyService {
     for (const l of p.lines) {
       const item = Number(
         this.run(
-          'INSERT INTO sale_items(sale_id,quality_id,carats,rate,less_pct,gross,net) VALUES(?,?,?,?,?,?,?)',
+          'INSERT INTO sale_items(sale_id,quality_id,carats,rate,less_pct,gross,net,price_currency,exchange_rate,rate_usd,total_usd) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
           id,
           l.qualityId,
           l.carats,
@@ -420,6 +603,10 @@ export class CompanyService {
           l.less,
           l.gross,
           l.net,
+          l.priceCurrency,
+          l.exchangeRate || null,
+          l.rateUsd || null,
+          l.totalUsd || null,
         ).lastInsertRowid,
       )
       items.push(item)
@@ -442,6 +629,25 @@ export class CompanyService {
         if (!lot) throw Error('Selected lot is not eligible on sale date')
         const qty = l.lots.length ? selection.carats : Math.min(needed, lot.remaining_carats)
         if (qty > lot.remaining_carats || qty > needed) throw Error('Insufficient lot stock')
+        if (l.inventoryMode === 'individual') {
+          if (qty !== lot.remaining_carats) {
+            throw Error('Individual stones must be sold as whole units')
+          }
+          const stoneRow = this.all(
+            'SELECT id,availability FROM diamond_stones WHERE lot_id=?',
+            lot.id,
+          )[0]
+          if (stoneRow) {
+            if (stoneRow.availability !== 'available' && stoneRow.availability !== 'hold') {
+              throw Error('Selected stone is already sold or unavailable')
+            }
+            this.run(
+              "UPDATE diamond_stones SET availability='sold',unbilled=0,sale_item_id=? WHERE id=?",
+              item,
+              stoneRow.id,
+            )
+          }
+        }
         const cost =
           qty === lot.remaining_carats
             ? lot.remaining_cost
@@ -937,6 +1143,10 @@ export class CompanyService {
             id,
           )
         }
+        this.run(
+          "UPDATE diamond_stones SET availability='cancelled' WHERE purchase_item_id IN (SELECT id FROM purchase_items WHERE purchase_id=?)",
+          id,
+        )
       } else {
         for (const a of this.all(
           'SELECT a.* FROM sale_stock_allocations a JOIN sale_items s ON s.id=a.sale_item_id WHERE s.sale_id=? AND a.active=1',
@@ -970,6 +1180,10 @@ export class CompanyService {
           )
           this.run('UPDATE sale_stock_allocations SET active=0 WHERE id=?', a.id)
         }
+        this.run(
+          "UPDATE diamond_stones SET availability='available',sale_item_id=NULL WHERE sale_item_id IN (SELECT id FROM sale_items WHERE sale_id=?)",
+          id,
+        )
       }
       for (const item of items) this.run('UPDATE open_items SET active=0 WHERE id=?', item.id)
     }
@@ -1196,28 +1410,60 @@ export class CompanyService {
           }
           case 'quality.save': {
             const before = t.id ? this.one('SELECT * FROM qualities WHERE id=?', t.id) : null
+            if (before && before.inventory_mode !== t.inventoryMode) {
+              const used = this.all(
+                'SELECT id FROM stock_lots WHERE quality_id=? UNION ALL SELECT id FROM purchase_items WHERE quality_id=? LIMIT 1',
+                before.id,
+                before.id,
+              )
+              if (used.length) {
+                throw Error(
+                  'Cannot change inventory type after stock or purchases exist for this quality',
+                )
+              }
+            }
             const key =
               t.id ??
               Number(
                 this.run(
-                  'INSERT INTO qualities(name,description,hike_pct,active) VALUES(?,?,?,?)',
+                  'INSERT INTO qualities(name,description,hike_pct,inventory_mode,active) VALUES(?,?,?,?,?)',
                   t.name,
                   t.description,
                   t.hike,
+                  t.inventoryMode,
                   +t.active,
                 ).lastInsertRowid,
               )
             if (t.id)
               this.run(
-                'UPDATE qualities SET name=?,description=?,hike_pct=?,active=? WHERE id=?',
+                'UPDATE qualities SET name=?,description=?,hike_pct=?,inventory_mode=?,active=? WHERE id=?',
                 t.name,
                 t.description,
                 t.hike,
+                t.inventoryMode,
                 +t.active,
                 t.id,
               )
             this.audit('quality', key, 'save', before, t)
             return { id: key }
+          }
+          case 'stone.setStatus': {
+            const stone = this.one('SELECT * FROM diamond_stones WHERE id=?', t.id)
+            if (stone.availability === 'sold' || stone.availability === 'cancelled') {
+              throw Error('Cannot change status of a sold or cancelled stone')
+            }
+            const nextUnbilled = t.unbilled === undefined ? stone.unbilled : +t.unbilled
+            this.run(
+              'UPDATE diamond_stones SET availability=?,unbilled=? WHERE id=?',
+              t.availability,
+              nextUnbilled,
+              t.id,
+            )
+            this.audit('stone', t.id, 'status', stone, {
+              availability: t.availability,
+              unbilled: nextUnbilled,
+            })
+            return { id: t.id, availability: t.availability, unbilled: Boolean(nextUnbilled) }
           }
           case 'bank.save': {
             let key = t.id
@@ -1530,7 +1776,16 @@ export class CompanyService {
       )
       return { ...l, available: m.qty, cost: m.cost }
     })
-    const qualities = this.all('SELECT * FROM qualities ORDER BY name')
+    const qualities = this.all('SELECT * FROM qualities ORDER BY name').map((c): Row => {
+      const prefix = srPrefix(c.name)
+      const nextSeq = this.nextSrSeq(c.id, c.name)
+      return {
+        ...c,
+        sr_prefix: prefix,
+        next_sr_seq: nextSeq,
+        next_sr_no: formatSrNo(prefix, nextSeq),
+      }
+    })
     const inventory: Row[] = qualities.map((c) => {
       const ls = lots.filter((l) => l.quality_id === c.id)
       const carats = ls.reduce((s, l) => s + l.available, 0)
@@ -1577,24 +1832,82 @@ export class CompanyService {
         overdue: Boolean(o.due_date && o.due_date < q.to),
       }
     })
+    const stones = this.all(
+      `SELECT ds.*, q.name quality, q.inventory_mode, l.acquired_date, l.original_cost, l.remaining_cost, l.remaining_carats,
+              pi.purchase_id, p.number purchase_number, p.bill_date purchase_date, p.slip_no purchase_slip_no, party.name supplier_name,
+              si.sale_id, s.number sale_number, s.bill_date sale_date, COALESCE(s.slip_no, '') sale_slip_no,
+              CASE
+                WHEN p.slip_no <> '' AND COALESCE(s.slip_no, '') <> '' THEN p.slip_no || ' / ' || s.slip_no
+                WHEN p.slip_no <> '' THEN p.slip_no
+                ELSE COALESCE(s.slip_no, '')
+              END AS slip_no
+       FROM diamond_stones ds
+       JOIN qualities q ON q.id = ds.quality_id
+       JOIN stock_lots l ON l.id = ds.lot_id
+       JOIN purchase_items pi ON pi.id = ds.purchase_item_id
+       JOIN purchases p ON p.id = pi.purchase_id
+       JOIN parties party ON party.id = p.party_id
+       LEFT JOIN sale_items si ON si.id = ds.sale_item_id
+       LEFT JOIN sales s ON s.id = si.sale_id
+       WHERE ds.availability <> 'cancelled' AND l.acquired_date <= ?
+       ORDER BY CASE ds.availability WHEN 'available' THEN 0 WHEN 'hold' THEN 1 ELSE 2 END, ds.id DESC`,
+      q.to,
+    )
+    const invoiceCurrencySummary = (items: Row[], totalInr: number) => {
+      const fxRates = [...new Set(items.map((x) => x.exchange_rate).filter(Boolean))]
+      const uniformRate = fxRates.length === 1 ? String(fxRates[0]) : ''
+      const allUsd = items.length > 0 && items.every((x) => x.price_currency === 'USD')
+      const sumNet = items.reduce((s, x) => s + Number(x.net || 0), 0)
+      const allHaveUsd = items.length > 0 && items.every((x) => Boolean(x.total_usd))
+      const netUsd = allHaveUsd
+        ? items.reduce((s, x) => s.plus(x.total_usd || 0), new Decimal(0))
+        : uniformRate && Number(uniformRate) > 0
+          ? new Decimal(totalInr).div(100).div(uniformRate)
+          : null
+      const totalUsd =
+        totalInr === sumNet && netUsd
+          ? netUsd.toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2)
+          : uniformRate && Number(uniformRate) > 0
+            ? new Decimal(totalInr)
+                .div(100)
+                .div(uniformRate)
+                .toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
+                .toFixed(2)
+            : netUsd && netUsd.gt(0)
+              ? netUsd.toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2)
+              : ''
+      return {
+        display_currency: allUsd ? 'USD' : 'INR',
+        exchange_rate: uniformRate,
+        total_usd: totalUsd,
+      }
+    }
     const purchases = this.all(
       'SELECT d.*,p.name party FROM purchases d JOIN parties p ON p.id=d.party_id WHERE d.bill_date BETWEEN ? AND ? ORDER BY d.bill_date DESC,d.id DESC',
       q.from,
       q.to,
-    ).map((d) => ({
-      ...d,
-      items: this.all(
-        'SELECT i.*,q.name quality FROM purchase_items i JOIN qualities q ON q.id=i.quality_id WHERE i.purchase_id=?',
+    ).map((d) => {
+      const items = this.all(
+        'SELECT i.*,q.name quality,q.inventory_mode FROM purchase_items i JOIN qualities q ON q.id=i.quality_id WHERE i.purchase_id=?',
         d.id,
-      ),
-      expenses: this.all(
-        'SELECT e.*,a.name account FROM purchase_expenses e LEFT JOIN accounts a ON a.id=e.fund_account_id WHERE e.purchase_id=?',
-        d.id,
-      ),
-      outstanding: openItems
-        .filter((o) => o.purchase_id === d.id)
-        .reduce((s, o) => s + o.outstanding, 0),
-    }))
+      ).map((item) => ({
+        ...item,
+        stone:
+          this.all('SELECT * FROM diamond_stones WHERE purchase_item_id=?', item.id)[0] ?? null,
+      }))
+      return {
+        ...d,
+        items,
+        expenses: this.all(
+          'SELECT e.*,a.name account FROM purchase_expenses e LEFT JOIN accounts a ON a.id=e.fund_account_id WHERE e.purchase_id=?',
+          d.id,
+        ),
+        outstanding: openItems
+          .filter((o) => o.purchase_id === d.id)
+          .reduce((s, o) => s + o.outstanding, 0),
+        ...invoiceCurrencySummary(items, d.supplier_total),
+      }
+    })
     const sales = this.all(
       'SELECT d.*,p.name party FROM sales d JOIN parties p ON p.id=d.party_id WHERE d.bill_date BETWEEN ? AND ? ORDER BY d.bill_date DESC,d.id DESC',
       q.from,
@@ -1612,18 +1925,23 @@ export class CompanyService {
           ? 0
           : this.one('SELECT coalesce(sum(amount),0) n FROM sale_brokerages WHERE sale_id=?', d.id)
               .n
+      const items = this.all(
+        'SELECT s.*,q.name quality,q.inventory_mode FROM sale_items s JOIN qualities q ON q.id=s.quality_id WHERE s.sale_id=?',
+        d.id,
+      ).map((l) => ({
+        ...l,
+        lots: this.all(
+          'SELECT lot_id,carats,mode FROM sale_stock_allocations WHERE sale_item_id=? AND active=1',
+          l.id,
+        ),
+        stones: this.all(
+          'SELECT ds.* FROM diamond_stones ds JOIN sale_stock_allocations a ON a.lot_id=ds.lot_id WHERE a.sale_item_id=? AND a.active=1',
+          l.id,
+        ),
+      }))
       return {
         ...d,
-        items: this.all(
-          'SELECT s.*,q.name quality FROM sale_items s JOIN qualities q ON q.id=s.quality_id WHERE s.sale_id=?',
-          d.id,
-        ).map((l) => ({
-          ...l,
-          lots: this.all(
-            'SELECT lot_id,carats,mode FROM sale_stock_allocations WHERE sale_item_id=? AND active=1',
-            l.id,
-          ),
-        })),
+        items,
         brokerages: this.all(
           'SELECT b.*,p.name broker FROM sale_brokerages b JOIN parties p ON p.id=b.broker_id WHERE b.sale_id=?',
           d.id,
@@ -1635,6 +1953,7 @@ export class CompanyService {
         outstanding: openItems
           .filter((o) => o.sale_id === d.id)
           .reduce((s, o) => s + o.outstanding, 0),
+        ...invoiceCurrencySummary(items, d.invoice_total),
       }
     })
     const payments = this.all(
@@ -1675,7 +1994,7 @@ export class CompanyService {
         ).length > 0,
     }))
     const journals = this.all(
-      "SELECT j.*,EXISTS(SELECT 1 FROM journal_entries r WHERE r.reversal_of=j.id) reversed FROM journal_entries j WHERE j.status='posted' AND j.entry_date BETWEEN ? AND ? ORDER BY j.entry_date DESC,j.id DESC",
+      "SELECT j.*,upper(j.narration) narration,upper(j.reference) reference,EXISTS(SELECT 1 FROM journal_entries r WHERE r.reversal_of=j.id) reversed FROM journal_entries j WHERE j.status='posted' AND j.entry_date BETWEEN ? AND ? ORDER BY j.entry_date DESC,j.id DESC",
       q.from,
       q.to,
     ).map<Row>((j) => ({
@@ -1686,7 +2005,7 @@ export class CompanyService {
       ),
     }))
     const ledger = this.all(
-      "SELECT j.entry_date date,j.number,j.source_type,j.source_id,j.narration,l.account_id,a.name account,a.kind,l.debit,l.credit FROM journal_lines l JOIN journal_entries j ON j.id=l.journal_id JOIN accounts a ON a.id=l.account_id WHERE j.status='posted' AND j.entry_date<=? ORDER BY j.entry_date,j.id,l.id",
+      "SELECT j.entry_date date,j.number,j.source_type,j.source_id,upper(j.narration) narration,l.account_id,a.name account,a.kind,l.debit,l.credit FROM journal_lines l JOIN journal_entries j ON j.id=l.journal_id JOIN accounts a ON a.id=l.account_id WHERE j.status='posted' AND j.entry_date<=? ORDER BY j.entry_date,j.id,l.id",
       q.to,
     )
     const reportAccounts: Row[] = accounts.map((a) => ({
@@ -1896,6 +2215,7 @@ export class CompanyService {
       banks,
       qualities,
       lots,
+      stones,
       inventory,
       openItems,
       purchases: purchases.map((d) => this.publicDocument('purchase', d)).filter((d) => d.current),

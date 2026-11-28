@@ -91,6 +91,26 @@ export function isTrustedExternalUrl(urlString: unknown, repo = DEFAULT_REPO): b
   return host === 'objects.githubusercontent.com' || host === 'release-assets.githubusercontent.com'
 }
 
+/** Verify official HTTPS diamond lab certificate lookup URLs allowed in external browser. */
+export function isTrustedCertificateUrl(urlString: unknown): boolean {
+  if (typeof urlString !== 'string' || !urlString.trim()) return false
+  let parsed: URL
+  try {
+    parsed = new URL(urlString.trim())
+  } catch {
+    return false
+  }
+  if (parsed.protocol !== 'https:') return false
+  const host = parsed.hostname.toLowerCase()
+  return (
+    host === 'www.igi.org' ||
+    host === 'igi.org' ||
+    host === 'www.gia.gov' ||
+    host === 'gia.gov' ||
+    host === 'my.hrdantwerp.com'
+  )
+}
+
 /** Select the best platform installer asset URL while skipping blockmaps and uninstallers. */
 export function findPlatformAsset(
   assets: ReleaseAsset[] | undefined,

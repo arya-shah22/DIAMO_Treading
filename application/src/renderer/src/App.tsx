@@ -8,6 +8,7 @@ import {
   ChartNoAxesCombined,
   CheckCircle2,
   DatabaseBackup,
+  ExternalLink,
   Eye,
   EyeOff,
   Gem,
@@ -39,6 +40,18 @@ import {
   SettingsRecoveryDrawer,
 } from './components/RecoveryDrawers'
 import { SoftwareInfoPanel, SoftwareUpdateModal } from './components/UpdateModalAndInfo'
+import {
+  assignAutoSrToLines,
+  certificateVerifyUrl,
+  CurrencyAmount,
+  EMPTY_STONE_SPECS,
+  formatMeasurements,
+  hydrateStoneForEdit,
+  PurchaseStoneLineEditor,
+  SaleStoneLineEditor,
+  StoneAvailabilityChip,
+  summarizeLinesCurrency,
+} from './components/StoneInventoryUI'
 
 const pages = [
   ['Overview', 'Dashboard', LayoutDashboard],
@@ -83,12 +96,13 @@ const drawerTitles: Record<string, string> = {
   backupOptions: 'Backup preferences',
   numbering: 'Document numbering',
   lot: 'Stock lot movements',
+  stoneDetail: 'Diamond stone specifications',
   dues: 'Due notifications',
 }
 
 function getDrawerSize(modal: string): DrawerSize {
   if (['purchase', 'sale', 'opening', 'detail', 'partyProfile'].includes(modal)) return 'xl'
-  if (['payment', 'journal', 'lot', 'dues'].includes(modal)) return 'lg'
+  if (['payment', 'journal', 'lot', 'stoneDetail', 'dues'].includes(modal)) return 'lg'
   return 'md'
 }
 
@@ -243,6 +257,7 @@ export default function App() {
       }
       if (!result.ok) throw Error(result.error)
       if (close) setModal(null)
+      setForm((f) => ({ ...f, _opKey: crypto.randomUUID() }))
       if (name === 'auth.logout') {
         setPage('Dashboard')
         setForm({})
@@ -302,7 +317,11 @@ export default function App() {
         input = { kind: form._edit.kind, id: form._edit.id, reason: form.editReason, input }
         name = 'document.edit'
       }
-      return await executeConfirmed(name, input, close, form._opKey)
+      const opKey =
+        modal && name !== 'stone.setStatus'
+          ? (form._opKey as string | undefined) || crypto.randomUUID()
+          : crypto.randomUUID()
+      return await executeConfirmed(name, input, close, opKey)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
       return null
@@ -319,19 +338,30 @@ export default function App() {
       _opKey: crypto.randomUUID(),
       date: today(),
       name: '',
+      slipNo: '',
       remarks: '',
       reference: '',
       dueDays: Number(state.settings?.default_credit_days ?? 0),
       active: true,
+      inventoryMode: 'bulk',
       roles: ['supplier'],
       creditDays: 0,
-      lines: [{ qualityId: '', carats: '', rate: '', less: '0', lots: [] }],
+      lines: [
+        {
+          qualityId: '',
+          carats: '',
+          rate: '',
+          less: '0',
+          lots: [],
+          stone: { ...EMPTY_STONE_SPECS },
+        },
+      ],
       expenses: [],
       brokerages: [],
       adjustments: [],
       direction: 'pay',
       amount: '',
-      mode: 'Bank transfer',
+      mode: 'BANK TRANSFER',
       automatic: true,
       allocations: [],
       kind: 'taken',
@@ -353,7 +383,10 @@ export default function App() {
     if (kind === 'party' && row) {
       Object.assign(initial, { contactPerson: row.contact_person, creditDays: row.credit_days })
     }
-    if (kind === 'quality' && row) initial.hike = row.hike_pct
+    if (kind === 'quality' && row) {
+      initial.hike = row.hike_pct
+      initial.inventoryMode = row.inventory_mode ?? 'bulk'
+    }
     if (kind === 'bank' && row) {
       Object.assign(initial, { name: row.bank_name, number: row.account_number })
     }
@@ -397,6 +430,7 @@ export default function App() {
     type = 'text',
     opts?: { value: any; label: string }[],
     required = false,
+    uppercase?: boolean,
   ) => (
     <Field
       key={key}
@@ -406,6 +440,7 @@ export default function App() {
       type={type}
       options={opts}
       required={required}
+      uppercase={uppercase}
     />
   )
 
@@ -467,6 +502,7 @@ export default function App() {
             name: form.name,
             description: text('description'),
             hike: form.hike === '' || form.hike == null ? null : String(form.hike),
+            inventoryMode: form.inventoryMode === 'individual' ? 'individual' : 'bulk',
             active: form.active,
           })
         case 'bank':
@@ -486,17 +522,51 @@ export default function App() {
             date: form.date,
             partyId: n('partyId'),
             dueDays: n('dueDays'),
+            slipNo: text('slipNo'),
             remarks: text('remarks'),
-            lines: form.lines.map((l: Row) => ({
-              qualityId: Number(l.qualityId),
-              carats: units(l.carats),
-              rate: String(l.rate),
-              less: String(l.less),
-              lots: (l.lots ?? []).map((a: Row) => ({
-                lotId: Number(a.lotId),
-                carats: units(a.carats),
-              })),
-            })),
+            lines: form.lines.map((l: Row) => {
+              const qRow = (state.qualities ?? []).find((q: Row) => q.id === Number(l.qualityId))
+              const isIndividual = qRow?.inventory_mode === 'individual'
+              const s = { ...EMPTY_STONE_SPECS, ...(l.stone ?? {}) }
+              if (s.priceCurrency === 'USD' && (!s.exchangeRate || Number(s.exchangeRate) <= 0)) {
+                throw Error('Enter a valid USD to INR exchange rate for USD-priced stones')
+              }
+              if (modal === 'purchase' && isIndividual) {
+                return {
+                  qualityId: Number(l.qualityId),
+                  carats: units(l.carats),
+                  rate: String(l.rate || s.rateInr),
+                  less: String(l.less || '0'),
+                  lots: [],
+                  priceCurrency: s.priceCurrency === 'USD' ? 'USD' : 'INR',
+                  exchangeRate: String(s.exchangeRate ?? ''),
+                  rateUsd: String(s.rateUsd ?? ''),
+                  totalUsd: String(s.totalUsd ?? ''),
+                  stone: {
+                    ...s,
+                    srNo: String(s.srNo ?? ''),
+                    availability: s.availability === 'hold' ? 'hold' : 'available',
+                    unbilled: Boolean(s.unbilled),
+                    growth: s.growth === 'CVD' || s.growth === 'HPHT' ? s.growth : '',
+                    priceCurrency: s.priceCurrency === 'USD' ? 'USD' : 'INR',
+                  },
+                }
+              }
+              return {
+                qualityId: Number(l.qualityId),
+                carats: units(l.carats),
+                rate: String(l.rate || s.rateInr || ''),
+                less: String(l.less || '0'),
+                lots: (l.lots ?? []).map((a: Row) => ({
+                  lotId: Number(a.lotId),
+                  carats: units(a.carats),
+                })),
+                priceCurrency: s.priceCurrency === 'USD' ? 'USD' : 'INR',
+                exchangeRate: String(s.exchangeRate ?? ''),
+                rateUsd: String(s.rateUsd ?? ''),
+                totalUsd: String(s.totalUsd ?? ''),
+              }
+            }),
             expenses: form.expenses.map((x: Row) => ({
               ...x,
               amount: units(x.amount),
@@ -704,6 +774,8 @@ export default function App() {
       accountId: r.fund_account_id,
     }
     if (kind === 'purchase' || kind === 'sale') {
+      values.slipNo = r.slip_no ?? ''
+      values.remarks = r.remarks ?? ''
       values.lines = r.items.map((l: Row) => ({
         qualityId: l.quality_id,
         carats: l.carats / 100,
@@ -712,6 +784,8 @@ export default function App() {
         lots: (l.lots ?? [])
           .filter((a: Row) => a.mode === 'manual')
           .map((a: Row) => ({ lotId: a.lot_id, carats: a.carats / 100 })),
+        stoneLotId: l.lots?.[0]?.lot_id ?? '',
+        stone: hydrateStoneForEdit(l),
       }))
       values.expenses = (r.expenses ?? []).map((a: Row) => ({
         ...a,
@@ -755,6 +829,23 @@ export default function App() {
       })
     }
     setForm((f) => ({ ...f, ...values }))
+  }
+
+  function startSaleForStone(stone: Row) {
+    setPage('Sale')
+    open('sale', {
+      lines: [
+        {
+          qualityId: stone.quality_id,
+          carats: stone.carats / 100,
+          rate: '',
+          less: '0',
+          lots: [{ lotId: stone.lot_id, carats: stone.carats / 100 }],
+          stoneLotId: stone.lot_id,
+          stone: { ...EMPTY_STONE_SPECS },
+        },
+      ],
+    })
   }
 
   const actions = (kind: string) => (r: Row) => (
@@ -808,9 +899,9 @@ export default function App() {
               {loginNotice}
             </div>
           )}
-          {f('email', 'Username', 'text', undefined, true)}
+          {f('email', 'Username', 'text', undefined, true, false)}
           <div className="password-field">
-            {f('password', 'Password', showPassword ? 'text' : 'password', undefined, true)}
+            {f('password', 'Password', showPassword ? 'text' : 'password', undefined, true, false)}
             <button
               type="button"
               aria-label="Toggle password visibility"
@@ -947,7 +1038,7 @@ export default function App() {
               Enter your new login username (or email) and confirm with your current password.
             </p>
             <div className="form-grid">
-              {f('newUsername', 'New username', 'text', undefined, true)}
+              {f('newUsername', 'New username', 'text', undefined, true, false)}
               {f('currentPassword', 'Current password', 'password', undefined, true)}
             </div>
           </>
@@ -1012,9 +1103,23 @@ export default function App() {
           <>
             <div className="form-grid">
               {f('name', 'Quality name', 'text', undefined, true)}
+              {f(
+                'inventoryMode',
+                'Inventory type',
+                'text',
+                [
+                  { value: 'bulk', label: 'Standard (Carats / Lots)' },
+                  { value: 'individual', label: 'Individual Stone (e.g. IGI Certified)' },
+                ],
+                true,
+              )}
               {f('hike', 'Hike override % (blank uses company default)', 'number')}
               {f('description', 'Description')}
             </div>
+            <p className="muted">
+              Standard qualities track weight by bulk lots. Individual Stone qualities record
+              piece-level specs, certificates, and USD/INR pricing per diamond.
+            </p>
             <label className="check">
               <input
                 type="checkbox"
@@ -1079,92 +1184,223 @@ export default function App() {
                 true,
               )}
               {f('dueDays', 'Due days', 'number')}
+              {f('slipNo', 'Slip no.')}
               {f('remarks', 'Remarks')}
             </div>
             <ListEditor
               title="Diamond lines"
               items={form.lines}
-              setItems={(v) => patch('lines', v)}
-              empty={{ qualityId: '', carats: '', rate: '', less: '0', lots: [] }}
+              setItems={(v) =>
+                patch(
+                  'lines',
+                  modal === 'purchase' ? assignAutoSrToLines(v, state.qualities ?? []) : v,
+                )
+              }
+              empty={{
+                qualityId: '',
+                carats: '',
+                rate: '',
+                less: '0',
+                lots: [],
+                stoneLotId: '',
+                stone: { ...EMPTY_STONE_SPECS },
+              }}
             >
-              {(r, u, i) => (
-                <>
-                  <Field
-                    label="Quality"
-                    value={r.qualityId}
-                    onChange={(v) => u('qualityId', v)}
-                    options={options('qualities')}
-                    required
-                  />
-                  <Field
-                    label="Carats"
-                    value={r.carats}
-                    onChange={(v) => u('carats', v)}
-                    type="number"
-                    required
-                  />
-                  <Field
-                    label="Rate ₹ / ct"
-                    value={r.rate}
-                    onChange={(v) => u('rate', v)}
-                    type="number"
-                    step="any"
-                    required
-                  />
-                  <Field
-                    label="Less %"
-                    value={r.less}
-                    onChange={(v) => u('less', v)}
-                    type="number"
-                    step="any"
-                  />
-                  {modal === 'sale' && (
-                    <div className="lot-editor">
-                      <small>
-                        Available:{' '}
-                        {ct(
-                          state.inventory?.find((q: Row) => q.id === Number(r.qualityId))?.carats ??
-                            0,
-                        )}{' '}
-                        ct · Leave manual lots empty for FIFO
-                      </small>
-                      <ListEditor
-                        title={`Manual lots for line ${i + 1}`}
-                        items={r.lots ?? []}
-                        setItems={(v) => u('lots', v)}
-                        empty={{ lotId: '', carats: '' }}
-                      >
-                        {(a, update) => (
-                          <>
-                            <Field
-                              label="Lot"
-                              value={a.lotId}
-                              onChange={(v) => update('lotId', v)}
-                              options={(state.lots ?? [])
-                                .filter(
-                                  (l: Row) =>
-                                    l.quality_id === Number(r.qualityId) &&
-                                    l.available > 0 &&
-                                    (!form.date || l.acquired_date <= form.date),
-                                )
-                                .map((l: Row) => ({
-                                  value: l.id,
-                                  label: `Lot ${l.id} · ${ct(l.available)} ct · ${displayDate(l.acquired_date)}`,
-                                }))}
-                            />
-                            <Field
-                              label="Carats"
-                              type="number"
-                              value={a.carats}
-                              onChange={(v) => update('carats', v)}
-                            />
-                          </>
-                        )}
-                      </ListEditor>
-                    </div>
-                  )}
-                </>
-              )}
+              {(r, u, i) => {
+                const lineQuality = (state.qualities ?? []).find(
+                  (q: Row) => q.id === Number(r.qualityId),
+                )
+                const isIndividual = lineQuality?.inventory_mode === 'individual'
+
+                if (modal === 'purchase' && isIndividual) {
+                  return (
+                    <PurchaseStoneLineEditor
+                      index={i}
+                      line={r}
+                      qualities={options('qualities')}
+                      onReplaceLine={(nextLine) =>
+                        patch(
+                          'lines',
+                          form.lines.map((row: Row, idx: number) => (idx === i ? nextLine : row)),
+                        )
+                      }
+                      onChangeQuality={(v) =>
+                        patch(
+                          'lines',
+                          assignAutoSrToLines(
+                            form.lines.map((row: Row, idx: number) =>
+                              idx === i ? { ...row, qualityId: v } : row,
+                            ),
+                            state.qualities ?? [],
+                          ),
+                        )
+                      }
+                      onOpenExternal={(url) => void openExternalUrl(url)}
+                    />
+                  )
+                }
+
+                if (modal === 'sale' && isIndividual) {
+                  const chosenLotIds = new Set(
+                    form.lines
+                      .filter((_: Row, idx: number) => idx !== i)
+                      .map((row: Row) => Number(row.stoneLotId || row.lots?.[0]?.lotId || 0))
+                      .filter(Boolean),
+                  )
+                  const availableStones = (state.stones ?? []).filter(
+                    (s: Row) =>
+                      s.quality_id === Number(r.qualityId) &&
+                      (s.availability === 'available' || s.availability === 'hold') &&
+                      (!form.date || s.acquired_date <= form.date) &&
+                      !chosenLotIds.has(s.lot_id),
+                  )
+                  const selectedLotId = Number(r.stoneLotId || r.lots?.[0]?.lotId || 0) || ''
+                  return (
+                    <SaleStoneLineEditor
+                      index={i}
+                      line={r}
+                      qualities={options('qualities')}
+                      availableStones={availableStones}
+                      selectedLotId={selectedLotId}
+                      onSelectQuality={(v) =>
+                        patch(
+                          'lines',
+                          form.lines.map((row: Row, idx: number) =>
+                            idx === i
+                              ? {
+                                  ...row,
+                                  qualityId: v,
+                                  carats: '',
+                                  lots: [],
+                                  stoneLotId: '',
+                                  rate: '',
+                                  stone: { ...EMPTY_STONE_SPECS },
+                                }
+                              : row,
+                          ),
+                        )
+                      }
+                      onSelectStone={(v) => {
+                        const picked = availableStones.find((s: Row) => s.lot_id === Number(v))
+                        patch(
+                          'lines',
+                          form.lines.map((row: Row, idx: number) =>
+                            idx === i
+                              ? {
+                                  ...row,
+                                  stoneLotId: picked ? picked.lot_id : '',
+                                  carats: picked ? picked.carats / 100 : '',
+                                  lots: picked
+                                    ? [{ lotId: picked.lot_id, carats: picked.carats / 100 }]
+                                    : [],
+                                }
+                              : row,
+                          ),
+                        )
+                      }}
+                      onReplaceLine={(nextLine) =>
+                        patch(
+                          'lines',
+                          form.lines.map((row: Row, idx: number) => (idx === i ? nextLine : row)),
+                        )
+                      }
+                    />
+                  )
+                }
+
+                return (
+                  <>
+                    <Field
+                      label="Quality"
+                      value={r.qualityId}
+                      onChange={(v) => {
+                        if (modal === 'purchase') {
+                          patch(
+                            'lines',
+                            assignAutoSrToLines(
+                              form.lines.map((row: Row, idx: number) =>
+                                idx === i ? { ...row, qualityId: v } : row,
+                              ),
+                              state.qualities ?? [],
+                            ),
+                          )
+                          return
+                        }
+                        u('qualityId', v)
+                      }}
+                      options={options('qualities')}
+                      required
+                    />
+                    <Field
+                      label="Carats"
+                      value={r.carats}
+                      onChange={(v) => u('carats', v)}
+                      type="number"
+                      required
+                    />
+                    <Field
+                      label="Rate ₹ / ct"
+                      value={r.rate}
+                      onChange={(v) => u('rate', v)}
+                      type="number"
+                      step="any"
+                      required
+                    />
+                    <Field
+                      label="Less %"
+                      value={r.less}
+                      onChange={(v) => u('less', v)}
+                      type="number"
+                      step="any"
+                    />
+                    {modal === 'sale' && (
+                      <div className="lot-editor">
+                        <small>
+                          Available:{' '}
+                          {ct(
+                            state.inventory?.find((q: Row) => q.id === Number(r.qualityId))
+                              ?.carats ?? 0,
+                          )}{' '}
+                          ct · Leave manual lots empty for FIFO
+                        </small>
+                        <ListEditor
+                          title={`Manual lots for line ${i + 1}`}
+                          items={r.lots ?? []}
+                          setItems={(v) => u('lots', v)}
+                          empty={{ lotId: '', carats: '' }}
+                        >
+                          {(a, update) => (
+                            <>
+                              <Field
+                                label="Lot"
+                                value={a.lotId}
+                                onChange={(v) => update('lotId', v)}
+                                options={(state.lots ?? [])
+                                  .filter(
+                                    (l: Row) =>
+                                      l.quality_id === Number(r.qualityId) &&
+                                      l.available > 0 &&
+                                      (!form.date || l.acquired_date <= form.date),
+                                  )
+                                  .map((l: Row) => ({
+                                    value: l.id,
+                                    label: `Lot ${l.id} · ${ct(l.available)} ct · ${displayDate(l.acquired_date)}`,
+                                  }))}
+                              />
+                              <Field
+                                label="Carats"
+                                type="number"
+                                value={a.carats}
+                                onChange={(v) => update('carats', v)}
+                              />
+                            </>
+                          )}
+                        </ListEditor>
+                      </div>
+                    )}
+                  </>
+                )
+              }}
             </ListEditor>
             {modal === 'purchase' ? (
               <ListEditor
@@ -1282,24 +1518,24 @@ export default function App() {
                 </ListEditor>
               </>
             )}
-            <div className="preview-bar">
-              <span>After-less line total</span>
-              <strong>
-                {money(
-                  Math.round(
-                    form.lines.reduce(
-                      (s: number, l: Row) =>
-                        s +
-                        Number(l.carats || 0) *
-                          Number(l.rate || 0) *
-                          (1 - Number(l.less || 0) / 100),
-                      0,
-                    ) * 100,
-                  ),
-                )}
-              </strong>
-              <small>Final amounts are validated and calculated by the accounting engine.</small>
-            </div>
+            {(() => {
+              const liveTotals = summarizeLinesCurrency(form.lines ?? [])
+              return (
+                <div className="preview-bar">
+                  <span>After-less line total</span>
+                  <CurrencyAmount
+                    currency={liveTotals.currency}
+                    inrPaise={liveTotals.inrPaise}
+                    usdAmount={liveTotals.usdAmount}
+                    exchangeRate={liveTotals.exchangeRate}
+                    size="lg"
+                  />
+                  <small>
+                    Final amounts are validated and calculated by the accounting engine.
+                  </small>
+                </div>
+              )
+            })()}
           </>
         )
       case 'payment':
@@ -2049,6 +2285,9 @@ export default function App() {
           state.qualities,
           [
             col('name', 'Quality'),
+            col('inventory_mode', 'Inventory type', (v) =>
+              v === 'individual' ? 'Individual Stone' : 'Standard (Lots)',
+            ),
             col('description', 'Description'),
             col('hike_pct', 'Hike %', (v) => v ?? `Default (${state.settings.global_hike_pct}%)`),
             col('active', 'Status', (v) => (v ? 'Active' : 'Inactive')),
@@ -2106,6 +2345,92 @@ export default function App() {
               col('projected', 'Projected value', money),
               col('profit', 'Projected profit', money),
             ])}
+            <h2 className="section-title">Individual / Certified Stones</h2>
+            {table(
+              'Individual stones',
+              state.stones ?? [],
+              [
+                col('sr_no', 'Sr.'),
+                col('availability', 'Availability', (_v, r) => (
+                  <StoneAvailabilityChip
+                    stone={r}
+                    onChangeStatus={(stoneId, availability) =>
+                      void command('stone.setStatus', { id: stoneId, availability })
+                    }
+                    onMarkSold={startSaleForStone}
+                  />
+                )),
+                col('quality', 'Quality'),
+                col('slip_no', 'Slip No.', (v) => v || '—'),
+                col('shape', 'Shape', (v) => v || '—'),
+                col('carats', 'Carat Weight', ct),
+                col('color', 'Color / Fancy', (_v, r) =>
+                  r.fancy_color
+                    ? [r.fancy_color, r.color_intensity, r.color_overtone]
+                        .filter(Boolean)
+                        .join(' · ')
+                    : r.color || '—',
+                ),
+                col('clarity', 'Clarity', (v) => v || '—'),
+                col(
+                  'cut',
+                  'Cut / Pol / Sym',
+                  (_v, r) => [r.cut, r.polish, r.symmetry].filter(Boolean).join(' / ') || '—',
+                ),
+                col('length_mm', 'Measurements', (_v, r) => formatMeasurements(r)),
+                col('report_number', 'Lab & Report #', (_v, r) => {
+                  const url = certificateVerifyUrl(r.lab, r.report_number)
+                  if (!r.report_number) return r.lab || '—'
+                  return (
+                    <span className="report-cell">
+                      <span>{[r.lab, r.report_number].filter(Boolean).join(' #')}</span>
+                      {url && (
+                        <button
+                          type="button"
+                          className="verify-link-btn"
+                          title="Verify certificate online"
+                          onClick={() => void openExternalUrl(url)}
+                        >
+                          <ExternalLink size={12} />
+                          Verify
+                        </button>
+                      )}
+                    </span>
+                  )
+                }),
+                col('growth', 'Growth', (v) => v || '—'),
+                col('price_per_ct_inr', 'Price / ct', (_v, r) => (
+                  <CurrencyAmount
+                    currency={r.price_currency}
+                    inrPaise={Number(r.price_per_ct_inr || 0) * 100}
+                    usdAmount={r.price_per_ct_usd}
+                    exchangeRate={r.exchange_rate}
+                    size="sm"
+                  />
+                )),
+                col('total_price_inr', 'Total Price', (_v, r) => (
+                  <CurrencyAmount
+                    currency={r.price_currency}
+                    inrPaise={r.total_price_inr || 0}
+                    usdAmount={r.total_price_usd}
+                    exchangeRate={r.exchange_rate}
+                    size="sm"
+                  />
+                )),
+              ],
+              (r) => (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDetail(r)
+                    setModal('stoneDetail')
+                  }}
+                >
+                  Specs
+                </button>
+              ),
+              false,
+            )}
             <h2 className="section-title">Stock lots</h2>
             {table(
               'Stock lots',
@@ -2168,9 +2493,23 @@ export default function App() {
               state.purchases,
               [
                 col('number', 'Invoice'),
+                col('slip_no', 'Slip No.', (v) => v || '—'),
                 col('bill_date', 'Date', displayDate),
                 col('party', 'Supplier'),
-                col('supplier_total', 'Supplier total', money),
+                col(
+                  'supplier_total',
+                  'Supplier total',
+                  (_v, r) => (
+                    <CurrencyAmount
+                      currency={r.display_currency}
+                      inrPaise={r.supplier_total}
+                      usdAmount={r.total_usd}
+                      exchangeRate={r.exchange_rate}
+                      size="sm"
+                    />
+                  ),
+                  true,
+                ),
                 col('stock_total', 'Inventory cost', money),
                 col('outstanding', 'Outstanding', money),
                 col('due_date', 'Due date', displayDate),
@@ -2217,9 +2556,23 @@ export default function App() {
               state.sales,
               [
                 col('number', 'Invoice'),
+                col('slip_no', 'Slip No.', (v) => v || '—'),
                 col('bill_date', 'Date', displayDate),
                 col('party', 'Customer'),
-                col('invoice_total', 'Invoice total', money),
+                col(
+                  'invoice_total',
+                  'Invoice total',
+                  (_v, r) => (
+                    <CurrencyAmount
+                      currency={r.display_currency}
+                      inrPaise={r.invoice_total}
+                      usdAmount={r.total_usd}
+                      exchangeRate={r.exchange_rate}
+                      size="sm"
+                    />
+                  ),
+                  true,
+                ),
                 col('brokerage', 'Brokerage', money),
                 col('cogs', 'COGS', money),
                 col('profit', 'Trading profit', money),
@@ -3005,6 +3358,101 @@ export default function App() {
   }
 
   const drawerContent = () => {
+    if (modal === 'stoneDetail' && detail) {
+      const verifyUrl = certificateVerifyUrl(detail.lab, detail.report_number)
+      return (
+        <div className="drawer-body">
+          <div className="button-row" style={{ marginBottom: 14 }}>
+            <StoneAvailabilityChip
+              stone={detail}
+              onChangeStatus={(stoneId, availability) => {
+                void command('stone.setStatus', { id: stoneId, availability }, true)
+              }}
+              onMarkSold={startSaleForStone}
+            />
+            {verifyUrl && (
+              <button
+                type="button"
+                className="primary"
+                onClick={() => void openExternalUrl(verifyUrl)}
+              >
+                <ExternalLink size={15} />
+                Verify certificate ({detail.lab || 'Lab'} #{detail.report_number})
+              </button>
+            )}
+          </div>
+          <dl className="detail-grid">
+            <dt>Sr.</dt>
+            <dd>{detail.sr_no || '—'}</dd>
+            <dt>Quality</dt>
+            <dd>{detail.quality || '—'}</dd>
+            <dt>Shape</dt>
+            <dd>{detail.shape || '—'}</dd>
+            <dt>Carat Weight</dt>
+            <dd>{ct(detail.carats)} ct</dd>
+            <dt>Color</dt>
+            <dd>{detail.color || '—'}</dd>
+            <dt>Fancy Color</dt>
+            <dd>{detail.fancy_color || '—'}</dd>
+            <dt>Color Intensity</dt>
+            <dd>{detail.color_intensity || '—'}</dd>
+            <dt>Color Overtone</dt>
+            <dd>{detail.color_overtone || '—'}</dd>
+            <dt>Clarity</dt>
+            <dd>{detail.clarity || '—'}</dd>
+            <dt>Cut / Polish / Symmetry</dt>
+            <dd>{[detail.cut || '—', detail.polish || '—', detail.symmetry || '—'].join(' / ')}</dd>
+            <dt>Ratio</dt>
+            <dd>{detail.ratio || '—'}</dd>
+            <dt>Measurements</dt>
+            <dd>{formatMeasurements(detail)}</dd>
+            <dt>Depth % / Table %</dt>
+            <dd>{`${detail.depth_pct || '—'}% / ${detail.table_pct || '—'}%`}</dd>
+            <dt>Fluorescence</dt>
+            <dd>{detail.fluorescence || '—'}</dd>
+            <dt>Lab &amp; Report #</dt>
+            <dd>{[detail.lab, detail.report_number].filter(Boolean).join(' #') || '—'}</dd>
+            <dt>Growth</dt>
+            <dd>{detail.growth || '—'}</dd>
+            <dt>Pricing currency &amp; FX</dt>
+            <dd>
+              {detail.price_currency}
+              {detail.exchange_rate ? ` · ₹${detail.exchange_rate} / $` : ''}
+            </dd>
+            <dt>Price / ct</dt>
+            <dd>
+              <CurrencyAmount
+                currency={detail.price_currency}
+                inrPaise={Number(detail.price_per_ct_inr || 0) * 100}
+                usdAmount={detail.price_per_ct_usd}
+                exchangeRate={detail.exchange_rate}
+                size="sm"
+              />
+            </dd>
+            <dt>Total Price</dt>
+            <dd>
+              <CurrencyAmount
+                currency={detail.price_currency}
+                inrPaise={detail.total_price_inr || 0}
+                usdAmount={detail.total_price_usd}
+                exchangeRate={detail.exchange_rate}
+                size="sm"
+              />
+            </dd>
+            <dt>Purchase Reference</dt>
+            <dd>
+              {detail.purchase_number || '—'}
+              {detail.purchase_slip_no ? ` · Slip ${detail.purchase_slip_no}` : ''}
+            </dd>
+            <dt>Sale Reference</dt>
+            <dd>
+              {detail.sale_number || '—'}
+              {detail.sale_slip_no ? ` · Slip ${detail.sale_slip_no}` : ''}
+            </dd>
+          </dl>
+        </div>
+      )
+    }
     if (modal === 'lot') {
       return (
         <div className="drawer-body">
@@ -3152,6 +3600,12 @@ export default function App() {
           <dl className="detail-grid">
             <dt>Document number</dt>
             <dd>{detail?.number}</dd>
+            {detail?.slip_no !== undefined && (
+              <>
+                <dt>Slip No.</dt>
+                <dd>{detail.slip_no || '—'}</dd>
+              </>
+            )}
             <dt>Party</dt>
             <dd>{detail?.party ?? '—'}</dd>
             <dt>Date</dt>
@@ -3186,12 +3640,84 @@ export default function App() {
               [
                 col('quality', 'Quality'),
                 col('carats', 'Carats', ct),
-                col('rate', 'Rate ₹ / ct', (v) => money(Number(v) * 100)),
+                col('rate', 'Rate / ct', (_v, r) => (
+                  <CurrencyAmount
+                    currency={r.price_currency}
+                    inrPaise={Number(r.rate || 0) * 100}
+                    usdAmount={r.rate_usd}
+                    exchangeRate={r.exchange_rate}
+                    size="sm"
+                  />
+                )),
                 col('less_pct', 'Less %'),
                 col('gross', 'Gross', money),
-                col('net', 'After less', money),
+                col(
+                  'net',
+                  'After less',
+                  (_v, r) => (
+                    <CurrencyAmount
+                      currency={r.price_currency}
+                      inrPaise={r.net}
+                      usdAmount={r.total_usd}
+                      exchangeRate={r.exchange_rate}
+                      size="sm"
+                    />
+                  ),
+                  true,
+                ),
               ],
             )}
+
+          {(() => {
+            const lineStones: Row[] = (detail?.items ?? []).flatMap((l: Row) =>
+              l.stone ? [l.stone] : (l.stones ?? []),
+            )
+            if (!lineStones.length) return null
+            return (
+              <>
+                <h3 className="section-title">Diamond stone specifications</h3>
+                {table(
+                  'Stone specs',
+                  lineStones,
+                  [
+                    col('sr_no', 'Sr.'),
+                    col('shape', 'Shape', (v) => v || '—'),
+                    col('carats', 'Carats', ct),
+                    col('color', 'Color', (_v, r) => r.fancy_color || r.color || '—'),
+                    col('clarity', 'Clarity', (v) => v || '—'),
+                    col(
+                      'cut',
+                      'Cut/Pol/Sym',
+                      (_v, r) => [r.cut, r.polish, r.symmetry].filter(Boolean).join('/') || '—',
+                    ),
+                    col('length_mm', 'Measurements', (_v, r) => formatMeasurements(r)),
+                    col('report_number', 'Lab & Report #', (_v, r) => {
+                      const url = certificateVerifyUrl(r.lab, r.report_number)
+                      if (!r.report_number) return r.lab || '—'
+                      return (
+                        <span className="report-cell">
+                          <span>{[r.lab, r.report_number].filter(Boolean).join(' #')}</span>
+                          {url && (
+                            <button
+                              type="button"
+                              className="verify-link-btn"
+                              onClick={() => void openExternalUrl(url)}
+                            >
+                              <ExternalLink size={12} />
+                              Verify
+                            </button>
+                          )}
+                        </span>
+                      )
+                    }),
+                    col('growth', 'Growth', (v) => v || '—'),
+                  ],
+                  undefined,
+                  false,
+                )}
+              </>
+            )
+          })()}
 
           {detail?.expenses?.length > 0 && (
             <>
@@ -3370,18 +3896,35 @@ export default function App() {
               <h3>Review calculated totals</h3>
               <dl>
                 {[
-                  ['Invoice total', form._preview.supplier ?? form._preview.invoice],
-                  ['Inventory cost', form._preview.stock],
-                  ['Brokerage', form._preview.brokerTotal],
-                  ['Net proceeds', form._preview.proceeds],
-                  ['Cost of goods sold', form._preview.cogs],
-                  ['Trading profit', form._preview.profit],
+                  [
+                    'Invoice total',
+                    form._preview.supplier ?? form._preview.invoice,
+                    form._preview.supplierUsd ?? form._preview.invoiceUsd,
+                  ],
+                  ['Inventory cost', form._preview.stock, form._preview.stockUsd],
+                  ['Brokerage', form._preview.brokerTotal, undefined],
+                  ['Net proceeds', form._preview.proceeds, form._preview.proceedsUsd],
+                  ['Cost of goods sold', form._preview.cogs, undefined],
+                  ['Trading profit', form._preview.profit, undefined],
                 ]
                   .filter(([, v]) => v !== undefined)
-                  .map(([label, value]) => (
+                  .map(([label, value, usdVal]) => (
                     <React.Fragment key={String(label)}>
                       <dt>{label}</dt>
-                      <dd>{money(Number(value))}</dd>
+                      <dd>
+                        {usdVal !== undefined ? (
+                          <CurrencyAmount
+                            currency={form._preview.displayCurrency}
+                            inrPaise={Number(value)}
+                            usdAmount={usdVal ? String(usdVal) : ''}
+                            exchangeRate={form._preview.exchangeRate}
+                            size="md"
+                            align="right"
+                          />
+                        ) : (
+                          money(Number(value))
+                        )}
+                      </dd>
                     </React.Fragment>
                   ))}
               </dl>
@@ -3480,7 +4023,7 @@ export default function App() {
               <Search size={15} />
               <input
                 aria-label="Search workspace"
-                placeholder="Search pages or invoices…"
+                placeholder="Search pages, invoices, slip no. or stone Sr.…"
                 value={globalSearch}
                 onChange={(e) => setGlobalSearch(e.target.value)}
               />
@@ -3505,9 +4048,11 @@ export default function App() {
                     ...(state.sales ?? []).map((d: Row) => ({ ...d, _kind: 'sale' })),
                   ]
                     .filter((d) =>
-                      (d.number + ' ' + d.party).toLowerCase().includes(globalSearch.toLowerCase()),
+                      `${d.number} ${d.slip_no ?? ''} ${d.party}`
+                        .toLowerCase()
+                        .includes(globalSearch.toLowerCase()),
                     )
-                    .slice(0, 8)
+                    .slice(0, 6)
                     .map((d) => (
                       <button
                         type="button"
@@ -3518,7 +4063,30 @@ export default function App() {
                           setGlobalSearch('')
                         }}
                       >
-                        {d.number} · {d.party}
+                        {d.number}
+                        {d.slip_no ? ` (Slip ${d.slip_no})` : ''} · {d.party}
+                      </button>
+                    ))}
+                  {(state.stones ?? [])
+                    .filter((s: Row) =>
+                      `${s.sr_no} ${s.report_number ?? ''} ${s.quality} ${s.slip_no ?? ''}`
+                        .toLowerCase()
+                        .includes(globalSearch.toLowerCase()),
+                    )
+                    .slice(0, 6)
+                    .map((s: Row) => (
+                      <button
+                        type="button"
+                        key={`stone-${s.id}`}
+                        onClick={() => {
+                          setDetail(s)
+                          setModal('stoneDetail')
+                          setGlobalSearch('')
+                        }}
+                      >
+                        {s.sr_no || `#${s.id}`} · {s.quality}
+                        {s.report_number ? ` · ${s.lab || 'Lab'} #${s.report_number}` : ''}
+                        {s.slip_no ? ` · Slip ${s.slip_no}` : ''}
                       </button>
                     ))}
                 </div>

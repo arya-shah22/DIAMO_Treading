@@ -466,7 +466,7 @@ export class ApplicationService {
             String(
               db.prepare('SELECT name FROM company_profile').get() &&
                 (db.prepare('SELECT name FROM company_profile').get() as Row).name,
-            ) + ' (restored)'
+            ) + ' (RESTORED)'
           db.prepare('UPDATE company_profile SET name=?,logo_path=NULL').run(name)
         } finally {
           db.close()

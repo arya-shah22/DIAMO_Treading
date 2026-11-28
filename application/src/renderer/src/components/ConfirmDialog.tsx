@@ -81,7 +81,19 @@ export function ConfirmDialog({
                   aria-label={state.reasonLabel ?? 'Reason'}
                   placeholder={state.reasonPlaceholder ?? 'Enter audit reason…'}
                   value={reason}
-                  onChange={(e) => setReason(e.target.value)}
+                  onChange={(e) => {
+                    const el = e.target
+                    const next = el.value.toUpperCase()
+                    if (el.value !== next) {
+                      const start = el.selectionStart
+                      const end = el.selectionEnd
+                      el.value = next
+                      if (start !== null && end !== null) {
+                        requestAnimationFrame(() => el.setSelectionRange(start, end))
+                      }
+                    }
+                    setReason(next)
+                  }}
                   required
                   autoFocus
                 />

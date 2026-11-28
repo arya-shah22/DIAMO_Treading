@@ -13,13 +13,60 @@ export const decimal = z
 export const amount = z.number().int().min(0).max(1e13)
 export const id = z.number().int().positive()
 export const text = z.string().trim().min(1).max(250)
+export const upperText = text.transform((v) => v.toUpperCase())
 const optionalText = z.string().max(2000).default('')
+const upperOptionalText = optionalText.transform((v) => v.toUpperCase())
+const shortField = z.string().trim().max(120).default('')
+const upperShortField = shortField.transform((v) => v.toUpperCase())
+const optionalDecimal = z
+  .string()
+  .trim()
+  .refine(
+    (v) => v === '' || (/^\d+(\.\d{1,8})?$/.test(v) && Number(v) <= 1e10),
+    'Use a nonnegative decimal, up to 8 decimal places',
+  )
+  .default('')
+export const stoneSpecs = z.object({
+  srNo: upperShortField,
+  availability: z.enum(['available', 'hold']).default('available'),
+  unbilled: z.boolean().default(false),
+  shape: upperShortField,
+  color: upperShortField,
+  fancyColor: upperShortField,
+  colorIntensity: upperShortField,
+  colorOvertone: upperShortField,
+  clarity: upperShortField,
+  cut: upperShortField,
+  polish: upperShortField,
+  symmetry: upperShortField,
+  ratio: optionalDecimal,
+  lengthMm: optionalDecimal,
+  widthMm: optionalDecimal,
+  heightMm: optionalDecimal,
+  depthPct: optionalDecimal,
+  tablePct: optionalDecimal,
+  fluorescence: upperShortField,
+  lab: upperShortField,
+  reportNumber: upperShortField,
+  growth: z.enum(['', 'CVD', 'HPHT']).default(''),
+  priceCurrency: z.enum(['INR', 'USD']).default('INR'),
+  exchangeRate: optionalDecimal,
+  rateUsd: optionalDecimal,
+  totalUsd: optionalDecimal,
+  rateInr: optionalDecimal,
+  totalInr: optionalDecimal,
+})
 const line = z.object({
   qualityId: id,
   carats: amount.refine((v) => v > 0),
   rate: decimal,
   less: decimal.default('0').refine((v) => Number(v) <= 100),
   lots: z.array(z.object({ lotId: id, carats: amount.refine((v) => v > 0) })).default([]),
+  priceCurrency: z.enum(['INR', 'USD']).optional(),
+  exchangeRate: optionalDecimal,
+  rateUsd: optionalDecimal,
+  totalUsd: optionalDecimal,
+  stone: stoneSpecs.optional(),
 })
 const brokerage = z.object({
   brokerId: id,
@@ -31,12 +78,13 @@ export const trade = z.object({
   date,
   partyId: id,
   dueDays: z.number().int().min(0).max(36500),
-  remarks: optionalText,
+  slipNo: upperShortField,
+  remarks: upperOptionalText,
   lines: z.array(line).min(1).max(200),
   expenses: z
     .array(
       z.object({
-        description: text,
+        description: upperText,
         amount: amount.refine((v) => v > 0),
         mode: z.enum(['supplier', 'separate']),
         accountId: id.nullable(),
@@ -45,7 +93,7 @@ export const trade = z.object({
     .default([]),
   brokerages: z.array(brokerage).default([]),
   adjustments: z
-    .array(z.object({ description: text, amount: z.number().int().min(-1e13).max(1e13) }))
+    .array(z.object({ description: upperText, amount: z.number().int().min(-1e13).max(1e13) }))
     .default([]),
   confirmNegative: z.boolean().default(false),
 })
@@ -55,9 +103,9 @@ export const payment = z.object({
   direction: z.enum(['pay', 'receive']),
   accountId: id,
   amount: amount.refine((v) => v > 0),
-  mode: text,
-  reference: optionalText,
-  remarks: optionalText,
+  mode: upperText,
+  reference: upperOptionalText,
+  remarks: upperOptionalText,
   automatic: z.boolean().default(true),
   allocations: z.array(z.object({ itemId: id, amount: amount.refine((v) => v > 0) })).default([]),
   confirmNegative: z.boolean().default(false),
@@ -71,13 +119,13 @@ export const loan = z.object({
   frequency: z.enum(['monthly', 'yearly']),
   returnDate: date.nullable(),
   accountId: id,
-  remarks: optionalText,
+  remarks: upperOptionalText,
   confirmNegative: z.boolean().default(false),
 })
 export const journal = z.object({
   date,
-  reference: optionalText,
-  narration: text,
+  reference: upperOptionalText,
+  narration: upperText,
   lines: z
     .array(z.object({ accountId: id, debit: amount, credit: amount }))
     .min(2)
@@ -110,40 +158,51 @@ export const commands = {
     currentPassword: z.string().min(1).max(200),
   }),
   'auth.password': z.object({ oldPassword: z.string(), newPassword: z.string().min(6).max(200) }),
-  'companies.create': z.object({ name: text, date, address: optionalText, contact: optionalText }),
+  'companies.create': z.object({
+    name: upperText,
+    date,
+    address: upperOptionalText,
+    contact: upperOptionalText,
+  }),
   'companies.select': z.object({ id: z.string().uuid() }),
   'companies.setDefault': z.object({ id: z.string().uuid().nullable() }),
   'party.save': z.object({
     id: id.optional(),
-    name: text,
+    name: upperText,
     roles: z.array(z.enum(['supplier', 'customer', 'broker', 'other'])).min(1),
-    contactPerson: optionalText,
-    phone: optionalText,
+    contactPerson: upperOptionalText,
+    phone: upperOptionalText,
     email: optionalText,
-    address: optionalText,
-    pan: optionalText,
-    gstin: optionalText,
+    address: upperOptionalText,
+    pan: upperOptionalText,
+    gstin: upperOptionalText,
     creditDays: z.number().int().min(0).max(36500),
-    remarks: optionalText,
+    remarks: upperOptionalText,
     active: z.boolean(),
   }),
   'quality.save': z.object({
     id: id.optional(),
-    name: text,
-    description: optionalText,
+    name: upperText,
+    description: upperOptionalText,
     hike: decimal.nullable(),
+    inventoryMode: z.enum(['bulk', 'individual']).default('bulk'),
     active: z.boolean(),
+  }),
+  'stone.setStatus': z.object({
+    id,
+    availability: z.enum(['available', 'hold']),
+    unbilled: z.boolean().optional(),
   }),
   'bank.save': z.object({
     id: id.optional(),
-    name: text,
-    holder: optionalText,
-    number: optionalText,
-    ifsc: optionalText,
+    name: upperText,
+    holder: upperOptionalText,
+    number: upperOptionalText,
+    ifsc: upperOptionalText,
     active: z.boolean(),
   }),
   'account.save': z.object({
-    name: text,
+    name: upperText,
     kind: z.enum(['asset', 'liability', 'equity', 'income', 'expense']),
   }),
   'purchase.post': trade,
@@ -177,21 +236,21 @@ export const commands = {
   'document.previewEdit': z.object({
     kind: z.enum(['purchase', 'sale', 'payment', 'loan', 'journal', 'transfer']),
     id,
-    reason: text,
+    reason: upperText,
     input: z.unknown(),
   }),
   'document.edit': z.object({
     kind: z.enum(['purchase', 'sale', 'payment', 'loan', 'journal', 'transfer']),
     id,
-    reason: text,
+    reason: upperText,
     input: z.unknown(),
   }),
-  'advance.reverse': z.object({ id, reason: text }),
-  'loan.reverseSettlement': z.object({ id, reason: text }),
+  'advance.reverse': z.object({ id, reason: upperText }),
+  'loan.reverseSettlement': z.object({ id, reason: upperText }),
   'document.cancel': z.object({
     kind: z.enum(['purchase', 'sale', 'payment', 'loan', 'journal', 'transfer']),
     id,
-    reason: text,
+    reason: upperText,
   }),
   'settings.numbering': z.object({
     kind: z.enum(['PUR', 'SAL', 'PAY', 'REC', 'LT', 'LG', 'JV', 'TRF']),
@@ -199,9 +258,9 @@ export const commands = {
     nextNumber: z.number().int().min(1).max(999999999),
   }),
   'settings.save': z.object({
-    name: text,
-    address: optionalText,
-    contact: optionalText,
+    name: upperText,
+    address: upperOptionalText,
+    contact: upperOptionalText,
     hike: decimal,
     creditDays: z.number().int().min(0).max(36500),
   }),
@@ -216,7 +275,7 @@ export const commands = {
         partyId: id,
         direction: z.enum(['pay', 'receive']),
         amount: amount.refine((v) => v > 0),
-        reference: text,
+        reference: upperText,
         date,
         dueDate: date,
       }),

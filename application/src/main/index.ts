@@ -21,7 +21,12 @@ import {
 } from 'node:fs'
 import { ApplicationService } from './services/application'
 import { buildRecoveryPdfHtml, type RecoveryPdfInput } from './services/recovery-pdf'
-import { checkUpdate, DEFAULT_REPO, isTrustedExternalUrl } from './services/updater'
+import {
+  checkUpdate,
+  DEFAULT_REPO,
+  isTrustedCertificateUrl,
+  isTrustedExternalUrl,
+} from './services/updater'
 import { commands, type Command } from '../shared/contracts'
 import { z } from 'zod'
 import ExcelJS from 'exceljs'
@@ -214,7 +219,8 @@ app.whenReady().then(async () => {
   handle('diamo:openExternal', async (input) => {
     service.requireAuth()
     const { url } = z.object({ url: z.string().min(1).max(2000) }).parse(input)
-    if (!isTrustedExternalUrl(url, DEFAULT_REPO)) throw Error('Blocked untrusted external URL')
+    if (!isTrustedExternalUrl(url, DEFAULT_REPO) && !isTrustedCertificateUrl(url))
+      throw Error('Blocked untrusted external URL')
     await shell.openExternal(url)
     return true
   })

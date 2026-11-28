@@ -4,6 +4,7 @@ import {
   compareVersions,
   DEFAULT_REPO,
   findPlatformAsset,
+  isTrustedCertificateUrl,
   isTrustedExternalUrl,
   parseSemver,
   type FetchJsonFn,
@@ -192,5 +193,10 @@ describe('Software updater unit & security checks', () => {
     expect(isTrustedExternalUrl('file:///etc/passwd')).toBe(false)
     expect(isTrustedExternalUrl('')).toBe(false)
     expect(isTrustedExternalUrl(null)).toBe(false)
+
+    expect(isTrustedCertificateUrl('https://www.igi.org/Verify-Your-Report/?r=123456')).toBe(true)
+    expect(isTrustedCertificateUrl('https://www.gia.gov/report-check?reportno=98765')).toBe(true)
+    expect(isTrustedCertificateUrl('http://www.igi.org/Verify-Your-Report/?r=123')).toBe(false)
+    expect(isTrustedCertificateUrl('https://evil.example.com/?r=123')).toBe(false)
   })
 })

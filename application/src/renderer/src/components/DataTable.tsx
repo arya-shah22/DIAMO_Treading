@@ -5,10 +5,16 @@ import { money } from '../../../shared/math'
 
 export const ReportContext = createContext('')
 
-export const col = (key: string, label: string, format?: (v: any, r: Row) => ReactNode) => ({
+export const col = (
+  key: string,
+  label: string,
+  format?: (v: any, r: Row) => ReactNode,
+  sumMoney = false,
+) => ({
   key,
   label,
   format,
+  sumMoney,
 })
 
 export function DataTable({
@@ -21,7 +27,12 @@ export function DataTable({
 }: {
   title: string
   rows: Row[]
-  columns: { key: string; label: string; format?: (v: any, r: Row) => ReactNode }[]
+  columns: {
+    key: string
+    label: string
+    format?: (v: any, r: Row) => ReactNode
+    sumMoney?: boolean
+  }[]
   action?: (r: Row) => ReactNode
   exportRows?: boolean
   showTotals?: boolean
@@ -62,7 +73,7 @@ export function DataTable({
   const totals: Row = {}
   if (showTotals) {
     for (const c of columns) {
-      if (c.format === money && !['average', 'running'].includes(c.key)) {
+      if ((c.format === money || c.sumMoney) && !['average', 'running'].includes(c.key)) {
         totals[c.label] = money(
           filtered
             .filter((r) => r.status !== 'cancelled' && !r.reversed)
@@ -79,7 +90,11 @@ export function DataTable({
           const formatted = c.format ? c.format(r[c.key], r) : r[c.key]
           return [
             c.label,
-            typeof formatted === 'object' ? String(r[c.key] ?? '') : (formatted ?? ''),
+            typeof formatted === 'object'
+              ? c.sumMoney
+                ? money(r[c.key])
+                : String(r[c.key] ?? '')
+              : (formatted ?? ''),
           ]
         }),
       ),

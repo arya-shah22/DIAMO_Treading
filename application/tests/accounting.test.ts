@@ -797,13 +797,13 @@ describe('Application identity, isolation, backup, restore and DB upgrades', () 
     const ind = (await a.restore(companyPath)) as any
     expect(ind.individual).toBe(true)
     expect(a.companies()).toHaveLength(2)
-    expect(a.companies().some((x: any) => x.name === 'Original (restored)')).toBe(true)
+    expect(a.companies().some((x: any) => x.name === 'ORIGINAL (RESTORED)')).toBe(true)
 
     // Full restore replaces registry cleanly
     await a.execute('companies.create', { name: 'Later', date: '2026-04-01' })
     await a.restore(fullPath)
     expect(a.companies()).toHaveLength(1)
-    expect(a.companies()[0]).toMatchObject({ name: 'Original' })
+    expect(a.companies()[0]).toMatchObject({ name: 'ORIGINAL' })
     a.close()
   })
 
@@ -815,13 +815,53 @@ describe('Application identity, isolation, backup, restore and DB upgrades', () 
       .prepare("INSERT INTO company_profile(id,name,start_date) VALUES(1,'Legacy Co','2026-04-01')")
       .run()
     legacy.prepare("INSERT INTO parties(name,active) VALUES('Legacy Party',1)").run()
+    const jid = Number(
+      legacy
+        .prepare(
+          "INSERT INTO journal_entries(number,entry_date,source_type,source_id,narration,reference,status) VALUES('JV/2026-27/0001','2026-04-01','journal',1,'Legacy cash','ref-1','draft')",
+        )
+        .run().lastInsertRowid,
+    )
+    legacy
+      .prepare('INSERT INTO journal_lines(journal_id,account_id,debit,credit) VALUES(?,1,1000,0)')
+      .run(jid)
+    legacy
+      .prepare('INSERT INTO journal_lines(journal_id,account_id,debit,credit) VALUES(?,12,0,1000)')
+      .run(jid)
+    legacy.prepare("UPDATE journal_entries SET status='posted' WHERE id=?").run(jid)
     legacy.close()
 
     const upgraded = openDatabase(v1CompanyPath, 'company')
     expect((upgraded.prepare('SELECT max(version) v FROM schema_migrations').get() as any).v).toBe(
-      5,
+      9,
     )
-    expect((upgraded.prepare('SELECT name FROM parties').get() as any).name).toBe('Legacy Party')
+    const qualityCols = upgraded
+      .prepare("PRAGMA table_info('qualities')")
+      .all()
+      .map((c: any) => c.name)
+    expect(qualityCols).toContain('inventory_mode')
+    const purchaseCols = upgraded
+      .prepare("PRAGMA table_info('purchases')")
+      .all()
+      .map((c: any) => c.name)
+    expect(purchaseCols).toContain('slip_no')
+    const saleCols = upgraded
+      .prepare("PRAGMA table_info('sales')")
+      .all()
+      .map((c: any) => c.name)
+    expect(saleCols).toContain('slip_no')
+    const stoneTable = upgraded
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='diamond_stones'")
+      .get()
+    expect(stoneTable).toBeTruthy()
+    const seqTable = upgraded
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='quality_sequences'")
+      .get()
+    expect(seqTable).toBeTruthy()
+    expect((upgraded.prepare('SELECT name FROM company_profile').get() as any).name).toBe(
+      'LEGACY CO',
+    )
+    expect((upgraded.prepare('SELECT name FROM parties').get() as any).name).toBe('LEGACY PARTY')
     expect(readdirSync(dir).some((n) => n.startsWith('legacy-company.sqlite.pre-v2-'))).toBe(true)
     upgraded.close()
 
@@ -833,11 +873,22 @@ describe('Application identity, isolation, backup, restore and DB upgrades', () 
         "INSERT INTO users(id,email,password_hash,must_change) VALUES(1,'admin@gmail.com','hash',0)",
       )
       .run()
+    legacyApp
+      .prepare(
+        "INSERT INTO companies(id,name,db_filename) VALUES('co-1','legacy co','co-1.sqlite')",
+      )
+      .run()
     legacyApp.close()
     const upgradedApp = openDatabase(v1AppPath, 'app')
     expect(
       (upgradedApp.prepare('SELECT max(version) v FROM schema_migrations').get() as any).v,
-    ).toBe(5)
+    ).toBe(9)
+    expect((upgradedApp.prepare('SELECT email FROM users WHERE id=1').get() as any).email).toBe(
+      'admin@gmail.com',
+    )
+    expect(
+      (upgradedApp.prepare('SELECT name FROM companies WHERE id=?').get('co-1') as any).name,
+    ).toBe('LEGACY CO')
     expect(
       (upgradedApp.prepare('SELECT must_change FROM users WHERE id=1').get() as any).must_change,
     ).toBe(0)
@@ -886,7 +937,7 @@ describe('Application identity, isolation, backup, restore and DB upgrades', () 
     })) as any
     expect(loginB.companyId).toBe(c2.id)
     expect((a.state() as any).companyId).toBe(c2.id)
-    expect((a.state() as any).profile.name).toBe('Beta Diamonds')
+    expect((a.state() as any).profile.name).toBe('BETA DIAMONDS')
 
     // Switch default to Alpha Diamonds -> previous default cleared automatically
     await a.execute('companies.setDefault', { id: c1.id })
@@ -896,7 +947,7 @@ describe('Application identity, isolation, backup, restore and DB upgrades', () 
       password: 'Admin@123',
     })) as any
     expect(loginA.companyId).toBe(c1.id)
-    expect((a.state() as any).profile.name).toBe('Alpha Diamonds')
+    expect((a.state() as any).profile.name).toBe('ALPHA DIAMONDS')
     expect(a.companies().filter((c: any) => c.is_default === 1)).toHaveLength(1)
 
     // Clearing default disables auto-open on next login
@@ -1091,5 +1142,841 @@ describe('Application identity, isolation, backup, restore and DB upgrades', () 
     const h = await hashArgon2id('MySecret123')
     expect(await verifySecret(h, 'MySecret123')).toBe(true)
     expect(await verifySecret(h, 'Wrong')).toBe(false)
+  })
+
+  it('Individual stone quality workflow: USD/INR purchase conversion, optional specs, Hold status switch, whole-stone sale & cancel restore', () => {
+    const stoneDb = openDatabase(join(dir, 'stone-co.sqlite'), 'company')
+    stoneDb
+      .prepare("INSERT INTO company_profile(id,name,start_date) VALUES(1,'Stone Co','2026-04-01')")
+      .run()
+    const c = new CompanyService(stoneDb)
+    try {
+      const sup = (
+        c.execute('party.save', {
+          name: 'IGI Supplier',
+          roles: ['supplier'],
+          creditDays: 30,
+          active: true,
+        }) as any
+      ).id
+      const cust = (
+        c.execute('party.save', {
+          name: 'IGI Buyer',
+          roles: ['customer'],
+          creditDays: 15,
+          active: true,
+        }) as any
+      ).id
+      const igiQuality = (
+        c.execute('quality.save', {
+          name: 'IGI Certified',
+          description: 'Piece-level stone tracking',
+          hike: '10',
+          inventoryMode: 'individual',
+          active: true,
+        }) as any
+      ).id
+
+      // USD purchase without exchange rate is rejected
+      expect(() =>
+        c.execute('purchase.post', {
+          date: '2026-04-10',
+          partyId: sup,
+          dueDays: 30,
+          lines: [
+            {
+              qualityId: igiQuality,
+              carats: 150,
+              rate: '85000',
+              less: '0',
+              stone: {
+                priceCurrency: 'USD',
+                exchangeRate: '',
+                rateUsd: '1000',
+                totalUsd: '1500.00',
+              },
+            },
+          ],
+        }),
+      ).toThrow('exchange rate')
+
+      // Valid USD individual stone purchase with auto-generated Sr. & Slip No.
+      const pur = c.execute('purchase.post', {
+        date: '2026-04-10',
+        partyId: sup,
+        dueDays: 30,
+        slipNo: 'SLIP-P-101',
+        lines: [
+          {
+            qualityId: igiQuality,
+            carats: 150,
+            rate: '85000',
+            less: '0',
+            stone: {
+              srNo: '',
+              availability: 'available',
+              unbilled: true,
+              shape: 'Round',
+              color: 'E',
+              clarity: 'VVS1',
+              cut: 'EX',
+              polish: 'EX',
+              symmetry: 'EX',
+              ratio: '1.01',
+              lengthMm: '7.35',
+              widthMm: '7.38',
+              heightMm: '4.52',
+              depthPct: '61.4',
+              tablePct: '57',
+              fluorescence: 'None',
+              lab: 'IGI',
+              reportNumber: 'LG6543210',
+              growth: 'CVD',
+              priceCurrency: 'USD',
+              exchangeRate: '85',
+              rateUsd: '1000',
+              totalUsd: '1500.00',
+              rateInr: '85000',
+              totalInr: '127500.00',
+            },
+          },
+        ],
+      }) as any
+      expect(pur.stock).toBe(12750000)
+
+      // Duplicate active Sr. is rejected
+      expect(() =>
+        c.execute('purchase.post', {
+          date: '2026-04-10',
+          partyId: sup,
+          dueDays: 30,
+          lines: [
+            {
+              qualityId: igiQuality,
+              carats: 100,
+              rate: '50000',
+              less: '0',
+              stone: { srNo: 'IGI-CERTIFIED-0001' },
+            },
+          ],
+        }),
+      ).toThrow('already assigned')
+
+      // Cancelled stone purchase does not reuse sequence numbers
+      const tempPur = c.execute('purchase.post', {
+        date: '2026-04-10',
+        partyId: sup,
+        dueDays: 30,
+        lines: [
+          {
+            qualityId: igiQuality,
+            carats: 100,
+            rate: '50000',
+            less: '0',
+            stone: { srNo: '' },
+          },
+        ],
+      }) as any
+      c.execute('document.cancel', { kind: 'purchase', id: tempPur.id, reason: 'Wrong lot' })
+      const seqSnap = c.snapshot({ from: '2026-04-01', to: '2026-12-31' })
+      const igiQMeta = seqSnap.qualities.find((q: any) => q.id === igiQuality)
+      expect(igiQMeta?.next_sr_no).toBe('IGI-CERTIFIED-0003')
+
+      // Cannot flip inventory type of quality after purchase exists
+      expect(() =>
+        c.execute('quality.save', {
+          id: igiQuality,
+          name: 'IGI Certified',
+          hike: '10',
+          inventoryMode: 'bulk',
+          active: true,
+        }),
+      ).toThrow('Cannot change inventory type')
+
+      let snap = c.snapshot({ from: '2026-04-01', to: '2026-12-31' })
+      expect(snap.stones).toHaveLength(1)
+      expect(snap.purchases.find((p: any) => p.id === pur.id)?.slip_no).toBe('SLIP-P-101')
+      const stone = snap.stones[0]
+      expect(stone).toMatchObject({
+        sr_no: 'IGI-CERTIFIED-0001',
+        purchase_slip_no: 'SLIP-P-101',
+        availability: 'available',
+        unbilled: 1,
+        shape: 'ROUND',
+        lab: 'IGI',
+        report_number: 'LG6543210',
+        growth: 'CVD',
+        price_currency: 'USD',
+        total_price_inr: 12750000,
+      })
+
+      // Status transition: Available -> Hold -> Available -> sell while Hold works too
+      c.execute('stone.setStatus', { id: stone.id, availability: 'hold' })
+      expect(c.snapshot({ from: '2026-04-01', to: '2026-12-31' }).stones[0].availability).toBe(
+        'hold',
+      )
+
+      // Selling individual quality without selecting specific stone fails
+      expect(() =>
+        c.execute('sale.post', {
+          date: '2026-04-12',
+          partyId: cust,
+          dueDays: 15,
+          lines: [{ qualityId: igiQuality, carats: 150, rate: '95000', less: '0' }],
+        }),
+      ).toThrow('Select specific stone')
+
+      // Partial carat sale from an individual stone is blocked
+      expect(() =>
+        c.execute('sale.post', {
+          date: '2026-04-12',
+          partyId: cust,
+          dueDays: 15,
+          lines: [
+            {
+              qualityId: igiQuality,
+              carats: 100,
+              rate: '95000',
+              less: '0',
+              lots: [{ lotId: stone.lot_id, carats: 100 }],
+            },
+          ],
+        }),
+      ).toThrow('whole units')
+
+      // Sell whole stone cleanly with Slip No. -> marks sold, clears unbilled, exact COGS ₹127,500, profit ₹15,000
+      const sale = c.execute('sale.post', {
+        date: '2026-04-12',
+        partyId: cust,
+        dueDays: 15,
+        slipNo: 'SLIP-S-202',
+        lines: [
+          {
+            qualityId: igiQuality,
+            carats: 150,
+            rate: '95000',
+            less: '0',
+            lots: [{ lotId: stone.lot_id, carats: 150 }],
+          },
+        ],
+      }) as any
+      expect(sale.invoice).toBe(14250000)
+
+      snap = c.snapshot({ from: '2026-04-01', to: '2026-12-31' })
+      expect(snap.stones[0]).toMatchObject({
+        availability: 'sold',
+        unbilled: 0,
+        sale_id: sale.id,
+        purchase_slip_no: 'SLIP-P-101',
+        sale_slip_no: 'SLIP-S-202',
+      })
+      expect(snap.sales[0].slip_no).toBe('SLIP-S-202')
+      expect(snap.totals.profit).toBe(1500000)
+      expect(snap.totals.balanceDifference).toBe(0)
+
+      // Cannot change status directly while sold
+      expect(() =>
+        c.execute('stone.setStatus', { id: stone.id, availability: 'available' }),
+      ).toThrow('sold')
+
+      // Cancelling sale restores stone back to available & zeros profit
+      c.execute('document.cancel', { kind: 'sale', id: sale.id, reason: 'Returned stone' })
+      snap = c.snapshot({ from: '2026-04-01', to: '2026-12-31' })
+      expect(snap.stones[0].availability).toBe('available')
+      expect(snap.totals.profit).toBe(0)
+
+      // Cancelling purchase marks stone cancelled
+      c.execute('document.cancel', { kind: 'purchase', id: pur.id, reason: 'Cancelled buy' })
+      expect(c.snapshot({ from: '2026-04-01', to: '2026-12-31' }).stones).toHaveLength(0)
+    } finally {
+      c.db.close()
+    }
+  })
+
+  it('Multi-stone purchase auto-series, custom jump, purchase & sale edits, and double-sell blocking', () => {
+    const db = openDatabase(join(dir, 'stone-multi.sqlite'), 'company')
+    db.prepare(
+      "INSERT INTO company_profile(id,name,start_date) VALUES(1,'MULTI CO','2026-04-01')",
+    ).run()
+    const svc = new CompanyService(db)
+    try {
+      const sup = (
+        svc.execute('party.save', {
+          name: 'Multi Supplier',
+          roles: ['supplier'],
+          creditDays: 30,
+          active: true,
+        }) as any
+      ).id
+      const cust = (
+        svc.execute('party.save', {
+          name: 'Multi Customer',
+          roles: ['customer'],
+          creditDays: 15,
+          active: true,
+        }) as any
+      ).id
+      const igiQ = (
+        svc.execute('quality.save', {
+          name: 'IGI',
+          inventoryMode: 'individual',
+          hike: '5',
+          active: true,
+        }) as any
+      ).id
+      const bulkQ = (
+        svc.execute('quality.save', {
+          name: 'Mix Lots',
+          inventoryMode: 'bulk',
+          hike: '5',
+          active: true,
+        }) as any
+      ).id
+
+      // Duplicate manual Sr. within the SAME multi-line purchase throws
+      expect(() =>
+        svc.execute('purchase.post', {
+          date: '2026-04-05',
+          partyId: sup,
+          dueDays: 30,
+          lines: [
+            { qualityId: igiQ, carats: 100, rate: '10000', less: '0', stone: { srNo: 'igi-99' } },
+            { qualityId: igiQ, carats: 120, rate: '11000', less: '0', stone: { srNo: 'IGI-99' } },
+          ],
+        }),
+      ).toThrow('already assigned')
+
+      // Mixed multi-line purchase (2 individual stones with auto Sr. + 1 bulk lot)
+      const pur = svc.execute('purchase.post', {
+        date: '2026-04-05',
+        partyId: sup,
+        dueDays: 30,
+        slipNo: 'p-10',
+        lines: [
+          {
+            qualityId: igiQ,
+            carats: 100,
+            rate: '50000',
+            less: '0',
+            stone: { srNo: '', shape: 'round' },
+          },
+          {
+            qualityId: igiQ,
+            carats: 150,
+            rate: '60000',
+            less: '0',
+            stone: { srNo: '', shape: 'oval' },
+          },
+          { qualityId: bulkQ, carats: 500, rate: '2000', less: '0' },
+        ],
+      }) as any
+
+      let snap = svc.snapshot({ from: '2026-04-01', to: '2026-12-31' })
+      expect(snap.stones.map((s: any) => s.sr_no).sort()).toEqual(['IGI-0001', 'IGI-0002'])
+      expect(snap.qualities.find((q: any) => q.id === igiQ)?.next_sr_no).toBe('IGI-0003')
+
+      // Edit unconsumed individual purchase keeping same Sr. numbers & updating slip/shape
+      const editedPur = svc.execute('document.edit', {
+        kind: 'purchase',
+        id: pur.id,
+        reason: 'fix slip & shape',
+        input: {
+          date: '2026-04-05',
+          partyId: sup,
+          dueDays: 30,
+          slipNo: 'p-11',
+          remarks: 'edited buy',
+          lines: [
+            {
+              qualityId: igiQ,
+              carats: 100,
+              rate: '50000',
+              less: '0',
+              stone: { srNo: 'IGI-0001', shape: 'pear' },
+            },
+            {
+              qualityId: igiQ,
+              carats: 150,
+              rate: '60000',
+              less: '0',
+              stone: { srNo: 'IGI-0002', shape: 'oval' },
+            },
+            { qualityId: bulkQ, carats: 500, rate: '2000', less: '0' },
+          ],
+        },
+      }) as any
+      snap = svc.snapshot({ from: '2026-04-01', to: '2026-12-31' })
+      expect(snap.stones).toHaveLength(2)
+      const stone1 = snap.stones.find((s: any) => s.sr_no === 'IGI-0001')
+      if (!stone1) throw Error('Expected stone IGI-0001 to exist')
+      expect(stone1.shape).toBe('PEAR')
+      expect(stone1.purchase_slip_no).toBe('P-11')
+
+      // Custom series jump (IGI-0010) advances next auto-fetched sequence to IGI-0011
+      svc.execute('purchase.post', {
+        date: '2026-04-06',
+        partyId: sup,
+        dueDays: 30,
+        lines: [
+          { qualityId: igiQ, carats: 100, rate: '40000', less: '0', stone: { srNo: 'igi-0010' } },
+        ],
+      })
+      snap = svc.snapshot({ from: '2026-04-01', to: '2026-12-31' })
+      expect(snap.qualities.find((q: any) => q.id === igiQ)?.next_sr_no).toBe('IGI-0011')
+
+      // Sell stone1 -> edit posted sale -> verify double-sell & consumed-purchase edit are blocked
+      const sale = svc.execute('sale.post', {
+        date: '2026-04-10',
+        partyId: cust,
+        dueDays: 15,
+        slipNo: 's-1',
+        lines: [
+          {
+            qualityId: igiQ,
+            carats: 100,
+            rate: '65000',
+            less: '0',
+            lots: [{ lotId: stone1.lot_id, carats: 100 }],
+          },
+        ],
+      }) as any
+      expect(() =>
+        svc.execute('sale.post', {
+          date: '2026-04-11',
+          partyId: cust,
+          dueDays: 15,
+          lines: [
+            {
+              qualityId: igiQ,
+              carats: 100,
+              rate: '70000',
+              less: '0',
+              lots: [{ lotId: stone1.lot_id, carats: 100 }],
+            },
+          ],
+        }),
+      ).toThrow()
+
+      svc.execute('document.edit', {
+        kind: 'sale',
+        id: sale.id,
+        reason: 'update sale slip',
+        input: {
+          date: '2026-04-10',
+          partyId: cust,
+          dueDays: 15,
+          slipNo: 's-2',
+          lines: [
+            {
+              qualityId: igiQ,
+              carats: 100,
+              rate: '70000',
+              less: '0',
+              lots: [{ lotId: stone1.lot_id, carats: 100 }],
+            },
+          ],
+        },
+      })
+      snap = svc.snapshot({ from: '2026-04-01', to: '2026-12-31' })
+      expect(snap.stones.find((s: any) => s.sr_no === 'IGI-0001')).toMatchObject({
+        availability: 'sold',
+        sale_slip_no: 'S-2',
+      })
+      expect(snap.totals.profit).toBe(2000000)
+
+      expect(() =>
+        svc.execute('document.edit', {
+          kind: 'purchase',
+          id: editedPur.id,
+          reason: 'cannot edit consumed',
+          input: {
+            date: '2026-04-05',
+            partyId: sup,
+            dueDays: 30,
+            lines: [
+              {
+                qualityId: igiQ,
+                carats: 100,
+                rate: '50000',
+                less: '0',
+                stone: { srNo: 'IGI-0001' },
+              },
+            ],
+          },
+        }),
+      ).toThrow()
+    } finally {
+      db.close()
+    }
+  })
+
+  it('Enforces ALL CAPS across all business fields while keeping emails & system accounts intact, and switches multi-company DBs cleanly', async () => {
+    const appDir = join(dir, 'caps-app')
+    const a = new ApplicationService(appDir)
+    await a.execute('auth.login', { email: 'admin@gmail.com', password: 'Admin@123' })
+    const c1 = (await a.execute('companies.create', {
+      name: 'DiAmO',
+      date: '2026-04-01',
+      address: 'Surat Bazar',
+      contact: 'info@diamo.local',
+    })) as any
+    const c2 = (await a.execute('companies.create', {
+      name: 'hErO',
+      date: '2026-04-01',
+    })) as any
+
+    await a.execute('companies.select', { id: c1.id })
+    const cashId = (a.state(c1.id) as any).accounts.find((x: any) => x.code === 'CASH').id
+    const capId = (a.state(c1.id) as any).accounts.find((x: any) => x.code === 'CAP').id
+    const pSup = (
+      await a.execute(
+        'party.save',
+        {
+          name: 'Acme Diamonds',
+          roles: ['supplier', 'customer'],
+          contactPerson: 'Ramesh Shah',
+          phone: '+91 abc 123',
+          email: 'sales@acme.com',
+          address: 'Varachha Road',
+          pan: 'abcde1234f',
+          gstin: '24abcde1234f1z5',
+          creditDays: 10,
+          remarks: 'trusted party',
+          active: true,
+        },
+        c1.id,
+      )
+    ).id
+    const qId = (
+      await a.execute(
+        'quality.save',
+        { name: 'Fancy Oval', description: 'gia graded', hike: '10', active: true },
+        c1.id,
+      )
+    ).id
+    await a.execute(
+      'bank.save',
+      {
+        name: 'Axis Bank',
+        holder: 'Diamo Co',
+        number: 'acc-99',
+        ifsc: 'utib0001',
+        active: true,
+      },
+      c1.id,
+    )
+    await a.execute('account.save', { name: 'Office Travel', kind: 'expense' }, c1.id)
+    await a.execute(
+      'opening.post',
+      {
+        date: '2026-04-01',
+        lines: [
+          { accountId: cashId, debit: 5000000, credit: 0 },
+          { accountId: capId, debit: 0, credit: 4900000 },
+        ],
+        lots: [],
+        bills: [
+          {
+            partyId: pSup,
+            direction: 'pay',
+            amount: 100000,
+            reference: 'op-bill-1',
+            date: '2026-04-01',
+            dueDate: '2026-04-15',
+          },
+        ],
+        advances: [],
+        loans: [],
+      },
+      c1.id,
+    )
+    await a.execute(
+      'purchase.post',
+      {
+        date: '2026-04-02',
+        partyId: pSup,
+        dueDays: 10,
+        slipNo: 'bk-1',
+        remarks: 'mixed parcel',
+        lines: [{ qualityId: qId, carats: 100, rate: '5000', less: '0' }],
+        expenses: [
+          { description: 'courier charge', amount: 5000, mode: 'supplier', accountId: null },
+        ],
+      },
+      c1.id,
+    )
+    await a.execute(
+      'payment.post',
+      {
+        date: '2026-04-03',
+        partyId: pSup,
+        direction: 'pay',
+        accountId: cashId,
+        amount: 50000,
+        mode: 'neft',
+        reference: 'utr-77',
+        remarks: 'part pay',
+        automatic: true,
+      },
+      c1.id,
+    )
+    await a.execute(
+      'journal.post',
+      {
+        date: '2026-04-04',
+        reference: 'jv-ref',
+        narration: 'misc expense',
+        lines: [
+          { accountId: capId, debit: 1000, credit: 0 },
+          { accountId: cashId, debit: 0, credit: 1000 },
+        ],
+      },
+      c1.id,
+    )
+
+    // Verify all business fields stored UPPERCASE, while party email & default accounts stay intact
+    const st = a.state(c1.id) as any
+    expect(st.profile.name).toBe('DIAMO')
+    expect(st.profile.address).toBe('SURAT BAZAR')
+    expect(st.parties[0]).toMatchObject({
+      name: 'ACME DIAMONDS',
+      contact_person: 'RAMESH SHAH',
+      email: 'sales@acme.com',
+      pan: 'ABCDE1234F',
+      gstin: '24ABCDE1234F1Z5',
+      remarks: 'TRUSTED PARTY',
+    })
+    expect(st.qualities[0]).toMatchObject({ name: 'FANCY OVAL', description: 'GIA GRADED' })
+    expect(st.banks[0]).toMatchObject({
+      bank_name: 'AXIS BANK',
+      holder: 'DIAMO CO',
+      ifsc: 'UTIB0001',
+    })
+    expect(st.accounts.find((x: any) => x.code === 'CASH').name).toBe('Cash in Hand')
+    expect(st.accounts.find((x: any) => x.name === 'OFFICE TRAVEL')).toBeTruthy()
+    expect(st.purchases[0]).toMatchObject({ slip_no: 'BK-1', remarks: 'MIXED PARCEL' })
+    expect(st.purchases[0].expenses[0].description).toBe('COURIER CHARGE')
+    expect(st.payments[0]).toMatchObject({ mode: 'NEFT', reference: 'UTR-77', remarks: 'PART PAY' })
+    expect(st.journals.find((j: any) => j.reference === 'JV-REF')?.narration).toBe('MISC EXPENSE')
+    expect(st.openItems.find((o: any) => o.kind === 'opening_payable')?.reference).toBe('OP-BILL-1')
+
+    // Switch back and forth between HERO and DIAMO with posted journals intact
+    await a.execute('companies.select', { id: c2.id })
+    expect((a.state(c2.id) as any).profile.name).toBe('HERO')
+    await a.execute('companies.select', { id: c1.id })
+    expect((a.state(c1.id) as any).profile.name).toBe('DIAMO')
+    a.close()
+
+    // Reopen fresh instance (simulates app restart) and switch into DIAMO cleanly
+    const a2 = new ApplicationService(appDir)
+    await a2.execute('auth.login', { email: 'admin@gmail.com', password: 'Admin@123' })
+    await a2.execute('companies.select', { id: c1.id })
+    expect((a2.state(c1.id) as any).journals.length).toBeGreaterThan(0)
+    a2.close()
+  })
+
+  it('v8 migration uppercases pre-v8 banks, custom accounts, stones & slips without breaking posted journals', () => {
+    const dbPath = join(dir, 'pre-v8-full.sqlite')
+    const raw = new Database(dbPath)
+    raw.exec(companyV1Sql)
+    raw
+      .prepare(
+        "INSERT INTO company_profile(id,name,address,start_date) VALUES(1,'old co','surat','2026-04-01')",
+      )
+      .run()
+    const supId = Number(
+      raw
+        .prepare(
+          "INSERT INTO parties(name,email,pan,active) VALUES('old sup','keep@lower.com','ab123',1)",
+        )
+        .run().lastInsertRowid,
+    )
+    const qId = Number(
+      raw
+        .prepare("INSERT INTO qualities(name,description,active) VALUES('igi','cert stone',1)")
+        .run().lastInsertRowid,
+    )
+    const customAcc = Number(
+      raw
+        .prepare("INSERT INTO accounts(code,name,kind) VALUES('CUSTOM_123','my travel','expense')")
+        .run().lastInsertRowid,
+    )
+    const jid = Number(
+      raw
+        .prepare(
+          "INSERT INTO journal_entries(number,entry_date,source_type,source_id,narration,reference,status) VALUES('JV/2026-27/0001','2026-04-01','journal',1,'old narration','old-ref','draft')",
+        )
+        .run().lastInsertRowid,
+    )
+    raw
+      .prepare('INSERT INTO journal_lines(journal_id,account_id,debit,credit) VALUES(?,1,1000,0)')
+      .run(jid)
+    raw
+      .prepare('INSERT INTO journal_lines(journal_id,account_id,debit,credit) VALUES(?,?,0,1000)')
+      .run(jid, customAcc)
+    raw.prepare("UPDATE journal_entries SET status='posted' WHERE id=?").run(jid)
+    raw
+      .prepare(
+        "INSERT INTO purchases(number,party_id,bill_date,due_days,due_date,remarks,status,supplier_total,stock_total) VALUES('PUR/2026-27/0001',?,'2026-04-01',0,'2026-04-01','mixed remark','posted',1000,1000)",
+      )
+      .run(supId)
+    raw.close()
+
+    const migrated = openDatabase(dbPath, 'company')
+    try {
+      expect(
+        (migrated.prepare('SELECT max(version) v FROM schema_migrations').get() as any).v,
+      ).toBe(9)
+      expect(
+        migrated.prepare('SELECT name,address FROM company_profile').get() as any,
+      ).toMatchObject({
+        name: 'OLD CO',
+        address: 'SURAT',
+      })
+      expect(
+        migrated.prepare('SELECT name,email,pan FROM parties WHERE id=?').get(supId) as any,
+      ).toMatchObject({
+        name: 'OLD SUP',
+        email: 'keep@lower.com',
+        pan: 'AB123',
+      })
+      expect((migrated.prepare('SELECT name FROM qualities WHERE id=?').get(qId) as any).name).toBe(
+        'IGI',
+      )
+      expect(
+        (migrated.prepare('SELECT name FROM accounts WHERE code=?').get('CASH') as any).name,
+      ).toBe('Cash in Hand')
+      expect(
+        (migrated.prepare('SELECT name FROM accounts WHERE id=?').get(customAcc) as any).name,
+      ).toBe('MY TRAVEL')
+      expect((migrated.prepare('SELECT remarks FROM purchases').get() as any).remarks).toBe(
+        'MIXED REMARK',
+      )
+
+      const svc = new CompanyService(migrated)
+      const snap = svc.snapshot({ from: '2026-04-01', to: '2026-12-31' })
+      expect(snap.journals[0]).toMatchObject({ narration: 'OLD NARRATION', reference: 'OLD-REF' })
+    } finally {
+      migrated.close()
+    }
+  })
+
+  it('Computes invoice currency display summaries and rejects USD sales without exchange rate', () => {
+    const db = openDatabase(join(dir, 'currency-summary.sqlite'), 'company')
+    db.prepare(
+      "INSERT INTO company_profile(id,name,start_date) VALUES(1,'FX CO','2026-04-01')",
+    ).run()
+    const svc = new CompanyService(db)
+    try {
+      const sup = (
+        svc.execute('party.save', {
+          name: 'SUP',
+          roles: ['supplier'],
+          creditDays: 0,
+          active: true,
+        }) as any
+      ).id
+      const cust = (
+        svc.execute('party.save', {
+          name: 'CUST',
+          roles: ['customer'],
+          creditDays: 0,
+          active: true,
+        }) as any
+      ).id
+      const qId = (
+        svc.execute('quality.save', {
+          name: 'IGI',
+          inventoryMode: 'individual',
+          hike: '5',
+          active: true,
+        }) as any
+      ).id
+
+      const pur = svc.execute('purchase.post', {
+        date: '2026-04-10',
+        partyId: sup,
+        dueDays: 0,
+        lines: [
+          {
+            qualityId: qId,
+            carats: 812,
+            rate: '10070',
+            less: '0',
+            priceCurrency: 'USD',
+            exchangeRate: '95',
+            rateUsd: '106',
+            totalUsd: '860.72',
+            stone: {
+              srNo: '',
+              priceCurrency: 'USD',
+              exchangeRate: '95',
+              rateUsd: '106',
+              totalUsd: '860.72',
+            },
+          },
+        ],
+      }) as any
+      expect(pur.displayCurrency).toBe('USD')
+      expect(pur.exchangeRate).toBe('95')
+      expect(pur.supplierUsd).toBe('860.72')
+
+      let snap = svc.snapshot({ from: '2026-04-01', to: '2026-12-31' })
+      const lotId = snap.stones[0].lot_id
+      expect(snap.purchases[0]).toMatchObject({
+        display_currency: 'USD',
+        exchange_rate: '95',
+        total_usd: '860.72',
+      })
+
+      expect(() =>
+        svc.execute('sale.post', {
+          date: '2026-04-12',
+          partyId: cust,
+          dueDays: 0,
+          lines: [
+            {
+              qualityId: qId,
+              carats: 812,
+              rate: '12000',
+              less: '0',
+              lots: [{ lotId, carats: 812 }],
+              priceCurrency: 'USD',
+              exchangeRate: '',
+            },
+          ],
+        }),
+      ).toThrow('exchange rate')
+
+      const sale = svc.execute('sale.post', {
+        date: '2026-04-12',
+        partyId: cust,
+        dueDays: 0,
+        lines: [
+          {
+            qualityId: qId,
+            carats: 812,
+            rate: '11400',
+            less: '0',
+            lots: [{ lotId, carats: 812 }],
+            priceCurrency: 'USD',
+            exchangeRate: '95',
+            rateUsd: '120',
+            totalUsd: '974.40',
+          },
+        ],
+      }) as any
+      expect(sale.displayCurrency).toBe('USD')
+      expect(sale.invoiceUsd).toBe('974.40')
+
+      snap = svc.snapshot({ from: '2026-04-01', to: '2026-12-31' })
+      expect(snap.sales[0]).toMatchObject({
+        display_currency: 'USD',
+        exchange_rate: '95',
+        total_usd: '974.40',
+      })
+    } finally {
+      db.close()
+    }
   })
 })

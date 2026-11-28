@@ -1,4 +1,4 @@
-import { type ReactNode } from 'react'
+import { type ChangeEvent, type ReactNode } from 'react'
 import { Plus, X } from 'lucide-react'
 import type { Row } from '../../../shared/contracts'
 
@@ -27,6 +27,8 @@ export function Field({
   options,
   required = false,
   step = '0.01',
+  placeholder,
+  uppercase = true,
 }: {
   label: string
   value: any
@@ -35,7 +37,24 @@ export function Field({
   options?: { value: any; label: string }[]
   required?: boolean
   step?: string
+  placeholder?: string
+  uppercase?: boolean
 }) {
+  const shouldUppercase = uppercase && (type === 'text' || type === 'textarea') && !options
+  const handleTextChange = (e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    const el = e.target
+    const next = shouldUppercase ? el.value.toUpperCase() : el.value
+    if (shouldUppercase && el.value !== next) {
+      const start = el.selectionStart
+      const end = el.selectionEnd
+      el.value = next
+      if (start !== null && end !== null) {
+        requestAnimationFrame(() => el.setSelectionRange(start, end))
+      }
+    }
+    onChange(next)
+  }
+
   return (
     <label className="field">
       <span>
@@ -58,18 +77,15 @@ export function Field({
           ))}
         </select>
       ) : type === 'textarea' ? (
-        <textarea
-          aria-label={label}
-          value={value ?? ''}
-          onChange={(e) => onChange(e.target.value)}
-        />
+        <textarea aria-label={label} value={value ?? ''} onChange={handleTextChange} />
       ) : (
         <input
           aria-label={label}
           value={value ?? ''}
           type={type}
           step={type === 'number' ? step : undefined}
-          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          onChange={handleTextChange}
           required={required}
         />
       )}
